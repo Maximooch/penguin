@@ -5,10 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
+from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
+    "SessionRun",
+    "active_request_count",
     "active_request_session_ids",
+    "busy_session_ids",
     "consume_session_abort",
     "discard_opencode_abort_session",
     "emit_process_user_message",
@@ -20,6 +24,7 @@ __all__ = [
     "mark_session_aborted",
     "register_opencode_process_request",
     "session_has_active_request",
+    "session_tasks",
     "track_session_task",
     "untrack_session_task",
 ]
@@ -33,13 +38,47 @@ def _session_id(value: Any) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
-def _ensure_request_state(owner: Any) -> None:
-    if not isinstance(getattr(owner, "_opencode_abort_sessions", None), set):
-        owner._opencode_abort_sessions = set()
-    if not isinstance(getattr(owner, "_opencode_process_tasks", None), dict):
-        owner._opencode_process_tasks = {}
-    if not isinstance(getattr(owner, "_opencode_active_requests", None), dict):
-        owner._opencode_active_requests = {}
+@dataclass
+class SessionRun:
+    """Live request state for one session.
+
+    Only this module reads or writes it. A record exists while a session has
+    work in flight or an abort waiting to be seen, and is dropped otherwise.
+
+    Attributes:
+        tasks: Tasks an abort of the session cancels.
+        requests: Process requests registered and not yet finalized; busy and
+            idle status events follow this count.
+        abort_requested: The session was asked to stop; stream chunks for it
+            raise ``CancelledError`` while this is set.
+    """
+
+    tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    requests: int = 0
+    abort_requested: bool = False
+
+    @property
+    def in_flight(self) -> bool:
+        """Whether a request or tracked task for the session is running."""
+        return self.requests > 0 or bool(self.tasks)
+
+
+def _runs(owner: Any) -> dict[str, SessionRun]:
+    runs = getattr(owner, "_opencode_session_runs", None)
+    if not isinstance(runs, dict):
+        runs = {}
+        owner._opencode_session_runs = runs
+    return runs
+
+
+def _run(owner: Any, sid: str) -> SessionRun:
+    return _runs(owner).setdefault(sid, SessionRun())
+
+
+def _drop_if_idle(owner: Any, sid: str) -> None:
+    run = _runs(owner).get(sid)
+    if run is not None and not run.in_flight and not run.abort_requested:
+        _runs(owner).pop(sid, None)
 
 
 async def _emit_session_status_best_effort(
@@ -87,25 +126,54 @@ def get_session_request_gate(owner: Any, session_id: Any) -> asyncio.Lock:
 def active_request_session_ids(owner: Any) -> set[str]:
     """Return the sessions that have a request in flight right now."""
 
-    _ensure_request_state(owner)
-    counted = {
-        sid
-        for sid, count in owner._opencode_active_requests.items()
-        if isinstance(sid, str) and isinstance(count, int) and count > 0
-    }
-    tracked = {
-        sid
-        for sid, tasks in owner._opencode_process_tasks.items()
-        if isinstance(sid, str) and tasks
-    }
-    return counted | tracked
+    return {sid for sid, run in _runs(owner).items() if run.in_flight}
 
 
 def session_has_active_request(owner: Any, session_id: Any) -> bool:
     """Return whether a request for the session is in flight."""
 
-    sid = _session_id(session_id)
-    return bool(sid) and sid in active_request_session_ids(owner)
+    run = _runs(owner).get(_session_id(session_id))
+    return run is not None and run.in_flight
+
+
+def active_request_count(owner: Any, session_id: Any) -> int:
+    """Return how many process requests for the session are registered."""
+
+    run = _runs(owner).get(_session_id(session_id))
+    return run.requests if run is not None else 0
+
+
+def session_tasks(owner: Any, session_id: Any) -> list[asyncio.Task[Any]]:
+    """Return the tasks an abort of the session must cancel."""
+
+    run = _runs(owner).get(_session_id(session_id))
+    return list(run.tasks) if run is not None else []
+
+
+def busy_session_ids(owner: Any) -> set[str]:
+    """Return the sessions that are busy: any live source says so.
+
+    A session is busy while a request is in flight, its stream is active, or
+    its TUI adapter has an open stream or tool. Each source is live state that
+    ends with the work, so none can leave a session busy after a crash.
+    """
+
+    busy = active_request_session_ids(owner)
+    stream_states = getattr(owner, "_opencode_stream_states", None)
+    if isinstance(stream_states, dict):
+        busy |= {
+            str(sid)
+            for sid, state in stream_states.items()
+            if isinstance(state, dict) and state.get("active")
+        }
+    adapters = getattr(owner, "_tui_adapters", None)
+    if isinstance(adapters, dict):
+        busy |= {
+            str(sid)
+            for sid, adapter in adapters.items()
+            if getattr(adapter, "_session_status", None) == "busy"
+        }
+    return busy
 
 
 def track_session_task(
@@ -118,12 +186,7 @@ def track_session_task(
     sid = _session_id(session_id)
     if not sid or request_task is None:
         return False
-    _ensure_request_state(owner)
-    tasks = owner._opencode_process_tasks.get(sid)
-    if not isinstance(tasks, set):
-        tasks = set()
-        owner._opencode_process_tasks[sid] = tasks
-    tasks.add(request_task)
+    _run(owner, sid).tasks.add(request_task)
     return True
 
 
@@ -135,25 +198,19 @@ def untrack_session_task(
     """Forget a task recorded with :func:`track_session_task`."""
 
     sid = _session_id(session_id)
-    if not sid or request_task is None:
+    run = _runs(owner).get(sid)
+    if run is None or request_task is None:
         return
-    _ensure_request_state(owner)
-    tasks = owner._opencode_process_tasks.get(sid)
-    if not isinstance(tasks, set):
-        return
-    tasks.discard(request_task)
-    if not tasks:
-        owner._opencode_process_tasks.pop(sid, None)
+    run.tasks.discard(request_task)
+    _drop_if_idle(owner, sid)
 
 
 def mark_session_aborted(owner: Any, session_id: Any) -> None:
     """Ask in-flight work for the session to stop at its next stream chunk."""
 
     sid = _session_id(session_id)
-    if not sid:
-        return
-    _ensure_request_state(owner)
-    owner._opencode_abort_sessions.add(sid)
+    if sid:
+        _run(owner, sid).abort_requested = True
 
 
 def consume_session_abort(owner: Any, session_id: Any) -> bool:
@@ -165,24 +222,24 @@ def consume_session_abort(owner: Any, session_id: Any) -> bool:
     """
 
     sid = _session_id(session_id)
-    if not sid:
+    run = _runs(owner).get(sid)
+    if run is None or not run.abort_requested:
         return False
-    _ensure_request_state(owner)
-    if sid not in owner._opencode_abort_sessions:
-        return False
-    if not session_has_active_request(owner, sid):
-        owner._opencode_abort_sessions.discard(sid)
+    if not run.in_flight:
+        run.abort_requested = False
+        _drop_if_idle(owner, sid)
     return True
 
 
 def discard_opencode_abort_session(owner: Any, session_id: Any) -> None:
-    """Discard a stale abort marker for a session if request state exists."""
+    """Discard a stale abort marker for a session."""
 
     sid = _session_id(session_id)
-    if not sid:
+    run = _runs(owner).get(sid)
+    if run is None:
         return
-    _ensure_request_state(owner)
-    owner._opencode_abort_sessions.discard(sid)
+    run.abort_requested = False
+    _drop_if_idle(owner, sid)
 
 
 def handle_process_cancelled(owner: Any, session_id: Any) -> dict[str, Any]:
@@ -320,31 +377,23 @@ async def register_opencode_process_request(
     """Track a session-scoped process request and emit busy on first request."""
 
     sid = _session_id(session_id)
-    _ensure_request_state(owner)
     if not sid:
         return False
 
-    owner._opencode_abort_sessions.discard(sid)
+    discard_opencode_abort_session(owner, sid)
     if not track_session_task(owner, sid, request_task):
         return False
-    tasks = owner._opencode_process_tasks[sid]
-
-    previous_count = owner._opencode_active_requests.get(sid, 0)
-    next_count = previous_count + 1
-    owner._opencode_active_requests[sid] = next_count
+    run = _run(owner, sid)
+    run.requests += 1
     try:
-        if next_count == 1:
+        if run.requests == 1:
             await _emit_session_status_best_effort(owner, sid, "busy")
             owner._ensure_opencode_session_status_heartbeat(sid)
         return True
     except BaseException:
-        tasks.discard(request_task)
-        if not tasks:
-            owner._opencode_process_tasks.pop(sid, None)
-        current_count = owner._opencode_active_requests.get(sid, 0)
-        remaining_count = max(current_count - 1, 0)
-        if remaining_count > 0:
-            owner._opencode_active_requests[sid] = remaining_count
+        run.tasks.discard(request_task)
+        run.requests = max(run.requests - 1, 0)
+        if run.requests > 0:
             try:
                 owner._ensure_opencode_session_status_heartbeat(sid)
             except Exception:
@@ -354,8 +403,6 @@ async def register_opencode_process_request(
                     exc_info=True,
                 )
         else:
-            owner._opencode_active_requests.pop(sid, None)
-        if remaining_count == 0:
             try:
                 owner._cancel_opencode_session_status_heartbeat(sid)
             except Exception:
@@ -364,6 +411,7 @@ async def register_opencode_process_request(
                     sid,
                     exc_info=True,
                 )
+        _drop_if_idle(owner, sid)
         raise
 
 
@@ -377,23 +425,18 @@ async def finalize_opencode_process_request(
     """Release process request tracking and emit idle after the last request."""
 
     sid = _session_id(session_id)
-    if not request_tracked or not sid:
-        return
-    _ensure_request_state(owner)
-
-    tasks = owner._opencode_process_tasks.get(sid)
-    if isinstance(tasks, set) and request_task is not None:
-        tasks.discard(request_task)
-        if not tasks:
-            owner._opencode_process_tasks.pop(sid, None)
-
-    current_count = owner._opencode_active_requests.get(sid, 0)
-    if current_count > 1:
-        owner._opencode_active_requests[sid] = current_count - 1
+    run = _runs(owner).get(sid)
+    if not request_tracked or run is None:
         return
 
-    owner._opencode_active_requests.pop(sid, None)
-    owner._opencode_abort_sessions.discard(sid)
+    if request_task is not None:
+        run.tasks.discard(request_task)
+    run.requests = max(run.requests - 1, 0)
+    if run.requests > 0:
+        return
+
+    run.abort_requested = False
+    _drop_if_idle(owner, sid)
     try:
         owner._cancel_opencode_session_status_heartbeat(sid)
     except Exception:

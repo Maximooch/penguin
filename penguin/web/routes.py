@@ -3966,8 +3966,10 @@ async def _process_chat_message(
 
         if request_session_id:
             request_task = asyncio.current_task()
-            if process_lifecycle.track_session_task(core, request_session_id, request_task):
-                tasks = core._opencode_process_tasks[request_session_id]
+            if process_lifecycle.track_session_task(
+                core, request_session_id, request_task
+            ):
+                tasks = process_lifecycle.session_tasks(core, request_session_id)
                 request_tracked = True
                 _request_log_debug(
                     "chat.trace.track request=%s session=%s task=%s tracked=%s session_tasks=%s",
@@ -4260,11 +4262,8 @@ async def _process_chat_message(
             request_gate = _get_session_request_gate(core, request_session_id)
             gate_locked_before = request_gate.locked()
             gate_wait_started = time.perf_counter()
-            active_requests = getattr(core, "_opencode_active_requests", {})
-            active_request_count = (
-                active_requests.get(request_session_id, 0)
-                if isinstance(active_requests, dict) and request_session_id
-                else 0
+            active_request_count = process_lifecycle.active_request_count(
+                core, request_session_id
             )
             _request_log_debug(
                 "chat.trace.before_process request=%s session=%s gate=%s gate_locked=%s active=%s cm=%s tracked=%s ctx=%s",

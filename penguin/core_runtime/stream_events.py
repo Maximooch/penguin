@@ -427,14 +427,11 @@ async def abort_session(
     adapter = owner._get_tui_adapter(sid)
     adapter_abort = getattr(adapter, "abort", None)
 
-    tasks_map = getattr(owner, "_opencode_process_tasks", None)
-    if isinstance(tasks_map, dict):
-        active_tasks = list(tasks_map.get(sid, set()))
-        for task in active_tasks:
-            if task.done():
-                continue
-            abort_task(task, AbortReason.USER_INTERRUPTED)
-            aborted = True
+    for task in process_lifecycle.session_tasks(owner, sid):
+        if task.done():
+            continue
+        abort_task(task, AbortReason.USER_INTERRUPTED)
+        aborted = True
 
     states = getattr(owner, "_opencode_stream_states", None)
     state = states.get(sid) if isinstance(states, dict) else None

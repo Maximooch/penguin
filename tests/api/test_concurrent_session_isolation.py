@@ -12,6 +12,8 @@ import pytest
 from fastapi import HTTPException
 from starlette.websockets import WebSocketDisconnect
 
+from penguin.core_runtime import process_lifecycle
+from penguin.core_runtime.process_lifecycle import SessionRun
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.openrouter_gateway import OpenRouterGateway
 from penguin.system.execution_context import (
@@ -1113,7 +1115,7 @@ async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
                 active_root=str(tmp_path),
             )
             self._opencode_session_directories: dict[str, str] = {}
-            self._opencode_process_tasks: dict[str, set[asyncio.Task[Any]]] = {}
+            self._opencode_session_runs: dict[str, SessionRun] = {}
             self._opencode_request_gates = {"session_queued_cancel": asyncio.Lock()}
 
         async def process(self, **kwargs):  # type: ignore[no-untyped-def]
@@ -1137,8 +1139,7 @@ async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
     )
     await asyncio.sleep(0.02)
 
-    tracked = core._opencode_process_tasks.get("session_queued_cancel")
-    assert isinstance(tracked, set)
+    tracked = set(process_lifecycle.session_tasks(core, "session_queued_cancel"))
     assert request_task in tracked
 
     request_task.cancel()
@@ -1148,7 +1149,9 @@ async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
     assert response["response"] == ""
     assert response["action_results"] == []
 
-    tracked_after = core._opencode_process_tasks.get("session_queued_cancel")
+    tracked_after = set(
+        process_lifecycle.session_tasks(core, "session_queued_cancel")
+    )
     assert not tracked_after or request_task not in tracked_after
 
     core._opencode_request_gates["session_queued_cancel"].release()
@@ -1167,7 +1170,7 @@ async def test_rest_chat_propagates_core_aborted_flag(tmp_path: Path) -> None:
                 active_root=str(tmp_path),
             )
             self._opencode_session_directories: dict[str, str] = {}
-            self._opencode_process_tasks: dict[str, set[asyncio.Task[Any]]] = {}
+            self._opencode_session_runs: dict[str, SessionRun] = {}
             self._opencode_request_gates = {"session_abort_passthrough": asyncio.Lock()}
 
         async def process(self, **kwargs):  # type: ignore[no-untyped-def]

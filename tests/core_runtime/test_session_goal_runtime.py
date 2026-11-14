@@ -10,6 +10,7 @@ import pytest
 
 from penguin.core_runtime import process_lifecycle, session_goal_runtime
 from penguin.core_runtime.opencode_facade import OpenCodeCoreFacade
+from penguin.core_runtime.process_lifecycle import SessionRun
 from penguin.core_runtime.session_goal_runtime import (
     GoalRunConflictError,
     GoalRunExecutionError,
@@ -83,7 +84,7 @@ class _Core:
             default_agent_id="default",
             prime_scoped_conversation_manager=MagicMock(),
         )
-        self._opencode_active_requests: dict[str, int] = {}
+        self._opencode_session_runs: dict[str, SessionRun] = {}
         self._goal_run_locks: dict[str, Any] = {}
         self._emit_opencode_session_status = AsyncMock()
         self._ensure_opencode_session_status_heartbeat = lambda session_id: None
@@ -441,7 +442,7 @@ async def test_run_session_goal_rejects_invalid_or_busy_state(tmp_path: Path) ->
     core.conversation_manager.session_manager.current_session.metadata[
         "_penguin_goal_v1"
     ] = current
-    core._opencode_active_requests[session.id] = 1
+    core._opencode_session_runs[session.id] = SessionRun(requests=1)
     with pytest.raises(GoalRunConflictError):
         await run_session_goal(core, session.id, run_mode_factory=_RunMode)
 
@@ -516,7 +517,7 @@ async def test_cancelled_goal_run_releases_claim_and_pauses_goal(
     goal = get_session_goal(core, session.id)
     assert goal is not None
     assert goal["active_run_id"] is None
-    assert core._opencode_active_requests == {}
+    assert core._opencode_session_runs == {}
 
 
 @pytest.mark.asyncio
@@ -542,7 +543,7 @@ async def test_locked_shared_session_gate_is_rejected_without_claim(
     assert goal is not None
     assert goal["status"] == "active"
     assert goal["active_run_id"] is None
-    assert core._opencode_active_requests == {}
+    assert core._opencode_session_runs == {}
 
 
 @pytest.mark.asyncio
@@ -945,7 +946,7 @@ async def test_goal_tool_only_finish_bounds_hung_completion_emitter(
     assert goal is not None
     assert goal["status"] == "complete"
     assert goal["active_run_id"] is None
-    assert core._opencode_active_requests == {}
+    assert core._opencode_session_runs == {}
     assert not get_session_goal_lock(core, session.id).locked()
 
 
@@ -978,7 +979,7 @@ async def test_cancellation_waits_for_terminal_goal_persistence(
     await asyncio.sleep(0)
     assert not task.done()
     assert get_session_goal_lock(core, session.id).locked()
-    assert core._opencode_active_requests == {session.id: 1}
+    assert process_lifecycle.active_request_count(core, session.id) == 1
 
     emitter_release.set()
     with pytest.raises(asyncio.CancelledError):
@@ -988,7 +989,7 @@ async def test_cancellation_waits_for_terminal_goal_persistence(
     assert goal is not None
     assert goal["status"] == "complete"
     assert goal["active_run_id"] is None
-    assert core._opencode_active_requests == {}
+    assert core._opencode_session_runs == {}
     assert not get_session_goal_lock(core, session.id).locked()
 
 

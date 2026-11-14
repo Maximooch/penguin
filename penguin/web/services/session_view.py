@@ -21,7 +21,7 @@ from penguin.core_runtime.session_goals import (
     normalize_goal,
 )
 from penguin.core_runtime import session_lookup
-from penguin.core_runtime.process_lifecycle import active_request_session_ids
+from penguin.core_runtime.process_lifecycle import busy_session_ids
 from penguin.system.state import MessageCategory
 from penguin.web.services.provider_catalog import canonical_model_id
 
@@ -1095,25 +1095,7 @@ def list_session_statuses(core: Any) -> dict[str, dict[str, Any]]:
     for info in list_session_infos(core):
         statuses[str(info["id"])] = {"type": "idle"}
 
-    stream_states = getattr(core, "_opencode_stream_states", None)
-    if isinstance(stream_states, dict):
-        for session_id, state in stream_states.items():
-            if not isinstance(state, dict):
-                continue
-            is_active = bool(state.get("active"))
-            statuses[str(session_id)] = {"type": "busy" if is_active else "idle"}
-
-    adapters = getattr(core, "_tui_adapters", None)
-    if isinstance(adapters, dict):
-        for session_id, adapter in adapters.items():
-            adapter_status = getattr(adapter, "_session_status", None)
-            if adapter_status in {"busy", "idle"}:
-                statuses[str(session_id)] = {"type": adapter_status}
-
-    # Busy comes only from state that lives and dies with a running request.
-    # A persisted assistant message without a completion time is not such
-    # state: after a crash nothing would ever clear it.
-    for session_id in active_request_session_ids(core):
+    for session_id in busy_session_ids(core):
         statuses[session_id] = {"type": "busy"}
 
     return statuses
