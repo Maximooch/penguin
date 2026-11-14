@@ -304,6 +304,23 @@ class WorkflowOrchestrator:
                     "message": f"Task in unexpected state {updated_task.status.value}"
             }
             
+        except asyncio.CancelledError:
+            # A cancelled run is not a failed task. Hand it back so it can be
+            # picked up again instead of staying RUNNING with no owner.
+            logger.info("Workflow for task '%s' was cancelled", task.title)
+            try:
+                current_task = self.project_manager.get_task(task.id)
+                if current_task and current_task.status == TaskStatus.RUNNING:
+                    self.project_manager.update_task_status(
+                        task.id, TaskStatus.ACTIVE
+                    )
+            except Exception as status_error:
+                logger.error(
+                    "Could not return cancelled task %s to ACTIVE: %s",
+                    task.id,
+                    status_error,
+                )
+            raise
         except Exception as e:
             logger.error(f"Workflow for task '{task.title}' failed: {e}", exc_info=True)
             self._debug(f"Exception encountered: {e}")
@@ -311,14 +328,22 @@ class WorkflowOrchestrator:
             # Check current task status before attempting to mark as failed
             current_task = self.project_manager.get_task(task.id)
             if current_task and current_task.status not in [TaskStatus.FAILED, TaskStatus.COMPLETED, TaskStatus.CANCELLED]:
-                # Only try to mark as failed if not already in a terminal state
-                success = self.project_manager.update_task_status(
-                    task.id, TaskStatus.FAILED
-                )
-                if not success:
-                    logger.error(f"Failed to update task status to FAILED for task {task.id}")
-                else:
+                # Only try to mark as failed if not already in a terminal state.
+                # The status move can itself be rejected (a task that never
+                # reached RUNNING cannot become FAILED); report the original
+                # error either way.
+                try:
+                    self.project_manager.update_task_status(
+                        task.id, TaskStatus.FAILED
+                    )
                     logger.info(f"Task '{task.title}' marked as FAILED due to workflow error")
+                except Exception as status_error:
+                    logger.error(
+                        "Could not mark task %s as FAILED from %s: %s",
+                        task.id,
+                        current_task.status.value,
+                        status_error,
+                    )
             else:
                 logger.info(f"Task '{task.title}' already in terminal state {current_task.status.value if current_task else 'unknown'}, not changing status")
             

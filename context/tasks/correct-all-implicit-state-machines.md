@@ -358,12 +358,13 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `advance_phase` and the direct `self.phase =` writes are still unguarded;
     web and CLI still call `task.approve` and storage directly. Bend model
     deferred.
-- [ ] **SM-20 Workflow orchestrator** (b)
+- [x] **SM-20 Workflow orchestrator** (b)
   - `penguin/project/workflow_orchestrator.py:104-329`
   - The PR result status is never inspected. `if not success` branches are
     dead. The except handler raises again. Cancellation leaves the task
     RUNNING.
   - Blocked by: SM-19
+  - State: the failure handler no longer raises when the FAILED mark is rejected, and a cancelled run returns the task to ACTIVE. Left as is: a failed PR step still ends in PENDING_REVIEW (validation passed; failing the task because GitHub is not configured would be wrong for local use), with the PR result in the workflow result. A non-terminal executor status still leaves the task RUNNING.
 - [ ] **SM-21 Native and Temporal workflow backends** (c)
   - `penguin/orchestration/native.py:53-56,158-290`,
     `penguin/orchestration/temporal/workflows.py:95,250`,
@@ -665,3 +666,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   files: 1423 passed, 22 skipped, 3 xfailed.
   `tests/integrations/test_bend_tool_status.py` and `test_bend_runtime.py`:
   8 passed.
+- SM-20: fixed (2026-11-13). `pytest -q tests/test_workflow_orchestrator_failure_paths.py`: 2 passed, both red before the fix; the three existing orchestrator test files: 6 passed.
