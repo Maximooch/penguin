@@ -353,7 +353,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one `LoopOutcome` reducer both loops call; bound every
     continue.
   - State: (partial, 2026-11-13) the output-limit continuation is bounded at 8 consecutive turns in both loops; the task loop then reports `iterations_exceeded`. Still open: the single `LoopOutcome` reducer; the stop, finish-tool and empty-response differences between the two loops; the malformed-action repair continue, which is still unbounded without an iteration cap; `CancelledError` skipping save and stream abort.
-- [x] **SM-16 Session abort, request accounting and busy/idle** (run record done; cancellation response on hold) (c) [design]
+- [x] **SM-16 Session abort, request accounting and busy/idle** (c) [design]
   - `penguin/core_runtime/process_lifecycle.py:30-313`,
     `penguin/core_runtime/stream_events.py:244-325,417-547,1031`,
     `penguin/web/services/session_view.py:1090-1133`,
@@ -365,7 +365,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one per-session run record owned by `process_lifecycle`;
     status derived from it only.
   - State: (partial, 2026-11-13) `process_lifecycle` is now the only writer of the task set and the abort marker (`track_session_task`, `untrack_session_task`, `mark_session_aborted`, `consume_session_abort`) and the only reader of "is a request in flight" (`session_has_active_request`, `active_request_session_ids`); routes, stream events, session view and goal runtime call it. Fixed: a crashed stream no longer leaves the session busy forever; a stale abort marker cancels at most one untracked chunk. Still open: the task set, counter and marker are still three attributes, not one run record (71 test references read them directly); a stale marker can still cancel one later untracked stream; every cancellation still returns as a normal 200; the stream-state and adapter busy sources are unchanged.
-  - State: (done apart from one question, 2026-11-14) one `SessionRun` record per session (`tasks`, `requests`, `abort_requested`) in `owner._opencode_session_runs` replaces the three attributes; only `process_lifecycle` reads or writes it, and a record is dropped once nothing is in flight. Busy comes from `process_lifecycle.busy_session_ids` only, which marks a session busy if any live source says so. Fixed with it: a session whose stream was active read as idle when its TUI adapter said idle. On hold, needs Maximus: whether a cancelled `/api/v1/chat/message` should keep returning HTTP 200 with `aborted: true` (clients may rely on it). Known limits kept: the abort marker is per session, so a second request registering during an abort clears it; with no tracked request, a marker left behind can still cancel one chunk of a later stream.
+  - State: (done apart from one question, 2026-11-14) one `SessionRun` record per session (`tasks`, `requests`, `abort_requested`) in `owner._opencode_session_runs` replaces the three attributes; only `process_lifecycle` reads or writes it, and a record is dropped once nothing is in flight. Busy comes from `process_lifecycle.busy_session_ids` only, which marks a session busy if any live source says so. Fixed with it: a session whose stream was active read as idle when its TUI adapter said idle. Decided by Maximus (2026-11-14): a cancelled `/api/v1/chat/message` keeps returning HTTP 200 with `aborted: true`. Known limits kept: the abort marker is per session, so a second request registering during an abort clears it; with no tracked request, a marker left behind can still cancel one chunk of a later stream.
 - [x] **SM-17 Stream scope lifecycle** (c)
   - `penguin/core_runtime/stream_events.py:193-216,604-986`,
     `penguin/core_runtime/process_streaming.py:114`,
@@ -755,3 +755,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-32: done (2026-11-14). Guarded lifecycle transitions; RETRYING now written by Link.
 - SM-33: done (2026-11-14). One call-outcome rule. Flaky under full-suite load, passes alone 3/3: tests/tools/test_log_inspired_process_faults.py::test_callback_exceptions_do_not_fake_failure_or_leak_child.
 - SM-16: run record done (2026-11-14). Cancellation response status on hold for a decision.
+- SM-16: decision (2026-11-14) from Maximus: a cancelled chat request keeps returning HTTP 200 with `aborted: true`. Nothing left open on SM-16 apart from the known limits in its State line.
