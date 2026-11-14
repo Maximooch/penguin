@@ -254,13 +254,16 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - A failure in the error emit after the engine ran tools may re-run the
     whole turn, re-adding the user message and re-running tools.
   - Correction: retry only before the engine has started.
-- [ ] **SM-11 GitHub webhook delivery** (b/c) [security]
+- [x] **SM-11 GitHub webhook delivery** (b/c) [security]
   - `penguin/web/integrations/github_webhook.py:30-81,269,286-343,455,647`
   - No sender filter, and the bot's own completion comment contains an
     `@Penguin` mention. Dedupe is in memory and marks a delivery seen before
     the work runs. Handlers swap the global current session.
   - Correction: ignore the bot's own comments; mark seen after success;
     stop mutating the global session.
+  - State: the self-trigger is fixed. On hold: dedupe is still in memory and
+    marks a delivery seen before the work runs (retry semantics are a product
+    choice); handlers still swap the global current session.
 
 ## Tier 1: wrong output, hung or stuck sessions
 
@@ -593,3 +596,8 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   - `pytest -q tests/system`: 115 passed, 2 skipped, 3 xfailed; the new
     backup-only test was red before the fix.
   - Other files that load sessions: 170 passed, 12 skipped.
+- SM-11: partly fixed (2026-11-13). `handle_issue_comment` ignores comments
+  whose author or sender is a bot account (`type == "Bot"` or a `[bot]` login).
+  - `pytest -q tests/api/test_github_webhook_self_trigger.py`: 4 passed; the
+    three bot cases were red before the fix.
+  - `tests/api/test_github_webhook_security.py`: 4 passed.
