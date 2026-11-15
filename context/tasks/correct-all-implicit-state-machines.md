@@ -216,6 +216,11 @@ on its own.
   been reused by an unrelated process, the run is refused rather than run
   twice. Claims from another host, or in the older id format, are still
   recovered as before.
+- SM-44: when a stream ends while an action tag is still open (the model
+  never closed it, or named a tag such as `<execute>` in prose), the text
+  held back since that tag is now shown instead of dropped. A truncated
+  tool call can therefore show its partial syntax, which the engine also
+  repairs (SM-15).
 - SM-40: when the session gate cannot be taken before the run deadline, the
   goal run now fails with a conflict before any claim is recorded. Before,
   it recorded the claim and then recorded a `timeout` result.
@@ -571,7 +576,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [ ] **SM-42 MCP connection lifecycle** (on hold 2026-11-13: retrying discovery after every failure changes how often servers are contacted; needs a retry policy decision) (b): `penguin/tools/providers/mcp.py:22-115`, `penguin/integrations/mcp/manager.py:71-503`; a failed discovery is sticky; (FAILED, session set) is representable; `_ensure_actor` is unlocked; `list_changed` is never consumed.
 - [x] **SM-43 Plugin lifecycle** (b): `penguin/plugins/plugin_manager.py:52-483`; parallel load looks like a deadlock (not run); action unregistration compares the wrong name.
   - State: action unregistration now compares against the plugin name. Not examined: the reported deadlock in parallel `load_all_plugins`, tool-name collisions, and the LOADING/ERROR status moves.
-- [ ] **SM-44 Streaming action-tag stripper** (b): `penguin/tui_adapter/part_events.py:112,181-267`; an unterminated tag drops all later text; reasoning and content share one parser state. Blocked by SM-02.
+- [x] **SM-44 Streaming action-tag stripper** (b): `penguin/tui_adapter/part_events.py:112,181-267`; an unterminated tag drops all later text; reasoning and content share one parser state. Blocked by SM-02.
+  - State: (done, 2026-11-15) the stripper is now `ActionTagFilter` (`penguin/tui_adapter/action_tag_filter.py`), one per channel, so reasoning and assistant text no longer share parser state. It holds back the text from an opening action tag onward and drops it when the tag closes; when the stream ends first, `on_stream_end` emits the held text into its part, so an unterminated tag no longer hides the rest of the reply.
 - [ ] **SM-45 Message / part / tool lifecycle** (re-read 2026-11-13: `on_assistant_error` emits a separate, already-completed error message; whether it should also end the active stream depends on who calls it and in what order, so it is left for a decision) (c): `penguin/tui_adapter/part_events.py:97-769`; the error path leaves `_stream_active` set; two sources of truth for active tools.
 - [ ] **SM-46 Headless CLI streaming display** (c): `penguin/cli/streaming_manager.py:27-80`, `penguin/cli/streaming_display.py:53-201`, `penguin/cli/cli.py:3763-4617`, `penguin/cli/event_manager.py:151-291`; stopping the spinner leaves the stream id set; five copies of the cleanup.
 - [x] **SM-47 CLI event bus delivery and dedup** (c): `penguin/cli/events.py:107-234`; events without `content` share a dedup key; sync handlers mutate display state from a worker thread.
@@ -852,3 +858,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-39: fixed (2026-11-15). `pytest -q tests/core_runtime/test_stream_state_lifecycle.py`: 2 passed, both red before the fix; `tests/core_runtime` and every stream-state test file: 65 files, 914 passed after updating the one test that pinned the leak.
 - SM-40: fixed (2026-11-15). `pytest -q tests/core_runtime/test_session_goal_claim.py`: 2 passed, both red before the fix; every session-goal test file: 9 files, 200 passed.
 - SM-41: fixed (2026-11-15). `pytest -q tests/test_core_runmode_cleanup.py`: 3 passed; the new re-entrancy test hung before the fix (the second start took over the first run). Every RunMode test file: 33 files, 375 passed apart from the two known `test_cli_surface_audit_regressions.py` baseline failures.
+- SM-44: fixed (2026-11-15). `pytest -q tests/test_part_event_action_tags.py`: 3 passed, 2 red before the fix (the third guards that a closed action split across chunks stays hidden); every part-event and streaming test file: 34 files, 506 passed.
