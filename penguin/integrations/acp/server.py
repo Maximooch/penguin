@@ -79,6 +79,8 @@ from penguin.tools.providers.client import client_tool_scope
 from penguin.tools.providers.mcp import mcp_provider_scope
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from acp.interfaces import Client
 
 logger = logging.getLogger(__name__)
@@ -146,6 +148,8 @@ class PenguinACPAgent:
         self._transport = None
         self._children = ChildTracker(self)
         self._processes = ProcessTracker(self)
+        # Called with a closed root once its last background process ends.
+        self.on_root_resolved: Callable[[str], None] | None = None
         self._questions = QuestionBridge(self)
         self._grants = ExactGrants(self)
 
@@ -620,10 +624,7 @@ class PenguinACPAgent:
                 for child in self._children.children.values()
             ):
                 raise RequestError.invalid_request({"reason": "Session is busy"})
-            if any(
-                sid == session_id and not state.get("completed")
-                for (sid, _), state in self._processes.states.items()
-            ):
+            if self._processes.unresolved(session_id):
                 raise RequestError.invalid_request(
                     {"reason": "Session has an unresolved background process"}
                 )

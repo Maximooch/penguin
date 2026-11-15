@@ -79,13 +79,18 @@ class ProcessTracker:
         ):
             return
         child = self.owner._children.children.get(sid)
-        if sid not in self.owner.sessions and not (
-            child and child.root in self.owner.sessions
-        ):
-            return
+        root = child.root if child else sid
         key = (sid, pid)
         current = self.states.get(key)
         if current and current.get("completed") and not force:
+            return
+        if root not in self.owner.sessions:
+            # The session was closed while this process ran. Record the
+            # completion so it no longer counts as unresolved, but send no
+            # update to a session the client has closed.
+            if completed and current is not None:
+                self.states[key] = {**current, "completed": True}
+                self._notify_if_resolved(root)
             return
         if current is None:
             await self.owner._send_update(
@@ -140,6 +145,18 @@ class ProcessTracker:
                 ],
             ),
         )
+
+    def unresolved(self, root: str) -> bool:
+        """Return whether a process started in ``root`` has not completed."""
+        return any(
+            sid == root and not state.get("completed")
+            for (sid, _), state in self.states.items()
+        )
+
+    def _notify_if_resolved(self, root: str) -> None:
+        callback = getattr(self.owner, "on_root_resolved", None)
+        if callable(callback) and not self.unresolved(root):
+            callback(root)
 
     def restore(self, root: str, update: Any) -> None:
         meta = getattr(update, "field_meta", None) or {}
