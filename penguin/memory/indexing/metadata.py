@@ -48,12 +48,19 @@ class IndexMetadata:
                 self.data = {}
 
     def _save_metadata(self) -> None:
-        """Save the current metadata to the file."""
+        """Save the current metadata, replacing the file only when complete.
+
+        A failed write leaves the previous file in place; a half-written file
+        would load as corrupt and cause every file to be indexed again.
+        """
+        partial = self.metadata_path.with_name(f"{self.metadata_path.name}.partial")
         try:
-            with open(self.metadata_path, "w", encoding="utf-8") as f:
+            with open(partial, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, indent=2)
-        except IOError as e:
+            os.replace(partial, self.metadata_path)
+        except OSError as e:
             logger.error(f"Error saving index metadata to {self.metadata_path}: {e}")
+            partial.unlink(missing_ok=True)
 
     def needs_indexing(self, file_path: str, embedding_model: str) -> bool:
         """
@@ -96,18 +103,35 @@ class IndexMetadata:
         except FileNotFoundError:
             return False
 
-    def update_file_metadata(self, file_path: str, content_hash: str, embedding_model: str) -> None:
+    def update_file_metadata(
+        self,
+        file_path: str,
+        content_hash: str,
+        embedding_model: str,
+        memory_id: Optional[str] = None,
+    ) -> None:
         """
         Update the metadata for a file after it has been indexed.
+
+        ``memory_id`` names the memory now holding the file, so a later
+        re-index can remove it.
         """
         file_path_str = str(file_path)
-        self.data[file_path_str] = {
+        record: Dict[str, Any] = {
             "last_indexed": time.time(),
             "last_modified": os.path.getmtime(file_path),
             "content_hash": content_hash,
             "embedding_model": embedding_model,
         }
+        if memory_id:
+            record["memory_id"] = memory_id
+        self.data[file_path_str] = record
         self._save_metadata()
+
+    def get_memory_id(self, file_path: str) -> Optional[str]:
+        """Return the id of the memory that holds ``file_path``, if recorded."""
+        memory_id = self.data.get(str(file_path), {}).get("memory_id")
+        return memory_id if isinstance(memory_id, str) and memory_id else None
 
     def remove_file_metadata(self, file_path: str) -> None:
         """Remove metadata for a deleted file."""
