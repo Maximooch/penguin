@@ -2406,56 +2406,64 @@ class ToolManager:
     def permission_enforcer(self):
         """Lazy load permission enforcer with workspace boundary policy."""
         if self._permission_enforcer is None and self._permission_enabled:
-            _ensure_permission_imports()
-            if _PermissionEnforcer is not None:
-                with profile_operation("ToolManager.lazy_load_permission_enforcer"):
-                    logger.debug("Lazy-loading permission enforcer")
-                    security_policy = (
-                        self.config.get("security")
-                        if isinstance(self.config, dict)
-                        else getattr(self.config, "security", None)
-                    ) or {}
-                    if callable(getattr(security_policy, "to_dict", None)):
-                        security_policy = security_policy.to_dict()
-                    if not isinstance(security_policy, dict):
-                        raise ValueError("security must be a configuration object")
-                    mode = _PermissionMode(
-                        self._security_mode
-                        or security_policy.get("mode", "workspace")
-                    )
-                    yolo = os.environ.get("PENGUIN_YOLO", "").lower() in (
-                        "1",
-                        "true",
-                        "yes",
-                    )
-                    enforcer = _PermissionEnforcer(mode=mode, yolo=yolo, audit_all=True)
-
-                    # Publish only after all configured policies are valid.
-                    if _WorkspaceBoundaryPolicy is not None:
-                        boundary_policy = _WorkspaceBoundaryPolicy(
-                            workspace_root=self.workspace_root,
-                            project_root=self.project_root,
-                            mode=mode,
-                            allowed_paths=security_policy.get("allowed_paths"),
-                            denied_paths=security_policy.get("denied_paths"),
-                            require_approval=security_policy.get("require_approval"),
-                        )
-                        enforcer.add_policy(boundary_policy)
-
-                    # Add mode-aware plan/build policy (hard block in plan mode).
-                    if _AgentModePolicy is not None:
-                        enforcer.add_policy(_AgentModePolicy())
-                    self._permission_enforcer = enforcer
-
-                    if _WorkspaceBoundaryPolicy is not None:
-                        logger.info(
-                            f"Permission enforcer initialized: mode={mode.value}, "
-                            f"workspace={self.workspace_root}, project={self.project_root}"
-                        )
-
-                    # Configure audit logger from config if available
-                    self._configure_audit_logger()
+            # One build at a time, so concurrent first checks share one
+            # enforcer (and configure the audit logger once).
+            with self._lazy_lock:
+                if self._permission_enforcer is None:
+                    self._build_permission_enforcer()
         return self._permission_enforcer
+
+    def _build_permission_enforcer(self) -> None:
+        """Build the enforcer from the current mode, roots and config."""
+        _ensure_permission_imports()
+        if _PermissionEnforcer is not None:
+            with profile_operation("ToolManager.lazy_load_permission_enforcer"):
+                logger.debug("Lazy-loading permission enforcer")
+                security_policy = (
+                    self.config.get("security")
+                    if isinstance(self.config, dict)
+                    else getattr(self.config, "security", None)
+                ) or {}
+                if callable(getattr(security_policy, "to_dict", None)):
+                    security_policy = security_policy.to_dict()
+                if not isinstance(security_policy, dict):
+                    raise ValueError("security must be a configuration object")
+                mode = _PermissionMode(
+                    self._security_mode
+                    or security_policy.get("mode", "workspace")
+                )
+                yolo = os.environ.get("PENGUIN_YOLO", "").lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                enforcer = _PermissionEnforcer(mode=mode, yolo=yolo, audit_all=True)
+
+                # Publish only after all configured policies are valid.
+                if _WorkspaceBoundaryPolicy is not None:
+                    boundary_policy = _WorkspaceBoundaryPolicy(
+                        workspace_root=self.workspace_root,
+                        project_root=self.project_root,
+                        mode=mode,
+                        allowed_paths=security_policy.get("allowed_paths"),
+                        denied_paths=security_policy.get("denied_paths"),
+                        require_approval=security_policy.get("require_approval"),
+                    )
+                    enforcer.add_policy(boundary_policy)
+
+                # Add mode-aware plan/build policy (hard block in plan mode).
+                if _AgentModePolicy is not None:
+                    enforcer.add_policy(_AgentModePolicy())
+                self._permission_enforcer = enforcer
+
+                if _WorkspaceBoundaryPolicy is not None:
+                    logger.info(
+                        f"Permission enforcer initialized: mode={mode.value}, "
+                        f"workspace={self.workspace_root}, project={self.project_root}"
+                    )
+
+                # Configure audit logger from config if available
+                self._configure_audit_logger()
 
     def _configure_audit_logger(self) -> None:
         """Configure the audit logger from SecurityConfig if available."""
