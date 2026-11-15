@@ -543,17 +543,18 @@ class ContextWindowManager:
             category_msgs = categorized[category]
             category_tokens = stats["per_category"].get(category, 0)
 
-            # If this category is over its individual budget, trim it regardless of total
-            if category_tokens > budget.max_category_tokens:
-                # Determine how much to trim
-                category_excess = category_tokens - budget.max_category_tokens
-
-                # If the overall budget is also exceeded, we might need to trim even more
-                if total_over_budget:
-                    category_excess = max(
-                        category_excess,
-                        min(tokens_to_trim, category_tokens - budget.min_tokens),
-                    )
+            # A category over its own budget is trimmed back to it. While the
+            # whole session is still over the window, lower-priority categories
+            # are trimmed further (down to their minimum) even when within
+            # their own budget: the category budgets add up to more than the
+            # window, so a session can be over it with every category within.
+            category_excess = max(0, category_tokens - budget.max_category_tokens)
+            if total_over_budget:
+                category_excess = max(
+                    category_excess,
+                    min(tokens_to_trim, category_tokens - budget.min_tokens),
+                )
+            if category_excess > 0:
 
                 # Always preserve recency by sorting oldest first for trimming
                 # This is now a required behavior for coherent trimming
