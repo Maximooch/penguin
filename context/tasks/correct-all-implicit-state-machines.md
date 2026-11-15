@@ -190,6 +190,13 @@ on its own.
   (`PROCESS_CANCEL_GRACE_SECONDS`) for its worker to stop the process, then
   returns the cancellation and logs a warning. The worker keeps running and
   still owns cleanup; only the caller stops waiting.
+- SM-26: at web-server shutdown, in-flight durable chat requests are
+  stopped with a new abort reason, `server_shutdown`, and given up to 5 s to
+  record it. Their receipts then read as stopped (`aborted: true`), which
+  A2A maps to cancelled, instead of staying accepted.
+- SM-26: the Link and A2A callers keep their own request fingerprints. They
+  write to separate stores, so they never meet. A2A's narrower one ignores
+  `link_execution` when a message id is reused.
 
 ## Item format
 
@@ -480,12 +487,13 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     are never unbound. The cancel wait is unbounded.
   - Blocked by: SM-24
   - State: (done, 2026-11-15) a completion notice is claimed, not peeked: `ProcessTools.take_pending` hands each notice out once under the lock, and `prepare_process_step` returns any it could not persist with `restore_pending`, so two steps for one session cannot both persist it and a failed persist is retried. A listener now has a lifetime: `bind` counts a step, `release` (called by `process_session_scope` when the step ends) drops the listener unless the owner still has a running process, and a completion event drops it once nothing can emit to it; a listener on a closed loop is dropped. The cancel wait is bounded (decision recorded).
-- [ ] **SM-26 Durable chat-request receipt** (c)
+- [x] **SM-26 Durable chat-request receipt** (c)
   - `penguin/web/services/chat_requests.py:36,85-347`,
     `penguin/web/services/a2a.py:74-248`, `penguin/web/app.py:211`
   - Rows whose owner died stay "recovering" forever. Fingerprints differ by
     caller. Shutdown neither awaits nor cancels in-flight tasks. The A2A
     repair mapper disagrees with the execute mapper.
+  - State: (partial, 2026-11-15) fixed: shutdown now stops in-flight durable requests (`stop_chat_requests`, called from the web app's lifespan) so their receipts record a stopped result; the A2A executor and the receipt repair on lookup use one mapping, `settled_task_state`, so a stored `error` result no longer reads as completed after a restart and a stored `provider_error` no longer stays open. Kept as is: the two callers' fingerprints (separate stores; see decisions). Open, needs Maximus: a row whose owner process died without shutting down (a crash or SIGKILL) still stays accepted, so Link and A2A see `recovering` forever. The module docstring makes that deliberate (never replay possibly executed tools). The fix would record an owner heartbeat and report such a row as a final `interrupted` (not replayed) result once the heartbeat is stale, which changes what Link sees.
 - [ ] **SM-27 WebSocket chat stream** (c)
   - `penguin/web/routes.py:4434-5047`
   - One queue is shared across messages, so a stale sentinel ends the next
@@ -805,3 +813,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-22: fixed (2026-11-15). `pytest -q tests/system/test_checkpoint_lifecycle.py`: 7 passed, all 7 red before the fix; `tests/system`, checkpoint, conversation, phase-1, CLI-integration and package-export tests: 29 files, 230 passed.
 - SM-24: fixed (2026-11-15). `pytest -q tests/tools/test_process_runtime_races.py`: 6 passed, 5 red before the fix (the sixth guards that children outliving their shell are still killed); 3 runs stable. All 40 test files that use the process runtime or tools: 565 passed.
 - SM-25: fixed (2026-11-15). `pytest -q tests/tools/test_process_notice_delivery.py`: 5 passed, 4 red before the fix (the fifth guards that a failed persist is retried). Process, engine and ACP suites: 69 files, 757 passed.
+- SM-26: partly fixed (2026-11-15). `pytest -q tests/web/test_chat_request_lifecycle.py`: 3 passed, all 3 red before the fix; every test file using the receipt store, A2A, task cancellation or the app lifespan: 12 files, 186 passed.

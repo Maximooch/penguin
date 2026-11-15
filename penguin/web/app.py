@@ -218,6 +218,9 @@ def create_app() -> "FastAPI":
         _setup_approval_websocket_callbacks()
         _setup_question_event_callbacks()
         yield
+        from penguin.web.services.chat_requests import stop_chat_requests
+
+        await stop_chat_requests()
         process_tools = getattr(
             getattr(core, "tool_manager", None), "_process_tools", None
         )

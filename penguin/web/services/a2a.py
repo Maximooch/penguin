@@ -62,6 +62,35 @@ def _workspace(core: Any) -> Path:
     return path
 
 
+_OPEN_STATUSES = frozenset({"recovering", "accepted", "working"})
+_FAILED_STATUSES = frozenset({"error", "provider_error", "llm_empty_response_error"})
+
+
+def settled_task_state(response: dict[str, Any]) -> TaskState | None:
+    """Return the A2A state a Penguin chat response settles its task in.
+
+    The executor and the receipt repair on lookup both use this, so a task
+    reads the same whether it settled live or after a restart.
+
+    Returns:
+        ``CANCELED``, ``FAILED`` or ``COMPLETED``, or None while the outcome
+        is not yet known and the task stays open.
+    """
+    if response.get("aborted") is True and response.get("status") == "stopped":
+        return TaskState.TASK_STATE_CANCELED
+    if response.get("status") in _OPEN_STATUSES or response.get("recoverable"):
+        return None
+    if response.get("status") in _FAILED_STATUSES:
+        return TaskState.TASK_STATE_FAILED
+    if response.get("error"):
+        # Provider errors can follow accepted side effects. Keep the task
+        # open until a durable receipt can be reconciled.
+        return None
+    if isinstance(response.get("response"), str):
+        return TaskState.TASK_STATE_COMPLETED
+    return None
+
+
 class ReceiptTaskStore(DatabaseTaskStore):
     """Repair an A2A task from Penguin's durable execution receipt on lookup."""
 
@@ -97,14 +126,11 @@ class ReceiptTaskStore(DatabaseTaskStore):
         response = receipt.get("response")
         if not isinstance(response, dict):
             return task
-        if response.get("aborted") is True and response.get("status") == "stopped":
-            task.status.state = TaskState.TASK_STATE_CANCELED
-        elif (
-            isinstance(response.get("response"), str)
-            and not response.get("error")
-            and not response.get("recoverable")
-            and response.get("status") not in {"recovering", "accepted", "working"}
-        ):
+        state = settled_task_state(response)
+        if state is None:
+            return task
+        task.status.state = state
+        if state is TaskState.TASK_STATE_COMPLETED:
             if not task.artifacts:
                 task.artifacts.append(
                     Artifact(
@@ -121,9 +147,6 @@ class ReceiptTaskStore(DatabaseTaskStore):
                     task_id=task.id,
                     context_id=task.context_id,
                 )
-            task.status.state = TaskState.TASK_STATE_COMPLETED
-        else:
-            return task
         await super().save(task, context)
         return task
 
@@ -215,29 +238,16 @@ class PenguinA2AExecutor(AgentExecutor):
             # Unknown execution state stays nonterminal.
             return
 
-        if response.get("aborted") is True and response.get("status") == "stopped":
+        state = settled_task_state(response)
+        if state is TaskState.TASK_STATE_CANCELED:
             await updater.cancel()
             return
-        if response.get("status") in {
-            "recovering",
-            "accepted",
-            "working",
-        } or response.get("recoverable"):
-            return
-        if response.get("status") in {
-            "error",
-            "provider_error",
-            "llm_empty_response_error",
-        }:
+        if state is TaskState.TASK_STATE_FAILED:
             await updater.failed()
             return
-        if response.get("error"):
-            # Provider errors can follow accepted side effects. Keep the task
-            # open until a durable receipt can be reconciled.
+        if state is None:
             return
-        answer = response.get("response")
-        if not isinstance(answer, str):
-            return
+        answer = response["response"]
         await updater.add_artifact(
             parts=[Part(text=answer)], name="response", last_chunk=True
         )

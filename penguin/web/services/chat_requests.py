@@ -30,7 +30,12 @@ from penguin.system.task_cancellation import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-__all__ = ["ChatRequestStore", "execute_chat_request", "get_chat_request_store"]
+__all__ = [
+    "ChatRequestStore",
+    "execute_chat_request",
+    "get_chat_request_store",
+    "stop_chat_requests",
+]
 
 logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task[dict[str, Any]]] = set()
@@ -226,6 +231,28 @@ def stopped_response(session_id: str) -> dict[str, Any]:
         "abort_reason": AbortReason.USER_INTERRUPTED.value,
         "session_id": session_id,
     }
+
+
+async def stop_chat_requests(timeout: float = 5.0) -> None:
+    """Stop in-flight durable requests at shutdown and wait for their receipts.
+
+    Each request records a stopped result with the ``server_shutdown`` reason,
+    so its receipt is final instead of staying accepted after the process exits.
+    A request still running after ``timeout`` keeps its accepted receipt.
+    """
+    running = [task for task in _tasks if not task.done()]
+    for task in running:
+        abort_task(task, AbortReason.SERVER_SHUTDOWN)
+    if not running:
+        return
+    _done, pending = await asyncio.wait(running, timeout=timeout)
+    if pending:
+        logger.warning(
+            "%s durable chat requests did not stop within %ss; their receipts "
+            "stay accepted",
+            len(pending),
+            timeout,
+        )
 
 
 def get_chat_request_store(core: Any) -> ChatRequestStore:
