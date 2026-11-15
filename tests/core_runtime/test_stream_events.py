@@ -1260,7 +1260,8 @@ async def test_handle_tui_stream_chunk_starts_tracks_and_finalizes_stream() -> N
     assert ("msg_1", "part_1", "hello", "assistant") in adapter.chunks
     assert adapter.chunks.count(("msg_1", "part_1", "hello", "assistant")) == 1
     assert adapter.ends == [("msg_1", "part_1")]
-    assert owner._opencode_message_adapters["msg_1"] is adapter
+    # The stream ended, so its adapter entry is released.
+    assert "msg_1" not in owner._opencode_message_adapters
     assert owner._opencode_stream_states["session_1"] == {
         "active": False,
         "stream_id": None,

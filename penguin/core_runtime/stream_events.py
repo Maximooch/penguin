@@ -448,6 +448,9 @@ async def abort_session(
                 aborted = True
             except Exception:
                 logger.warning("Failed to force-finalize aborted stream", exc_info=True)
+            message_adapters = getattr(owner, "_opencode_message_adapters", None)
+            if isinstance(message_adapters, dict):
+                message_adapters.pop(message_id, None)
         state["active"] = False
         state["stream_id"] = None
         state["part_id"] = None
@@ -1275,9 +1278,11 @@ async def handle_tui_stream_chunk(
                 await adapter.on_stream_end(message_id, part_id)
             except Exception:
                 pass
+            owner._opencode_message_adapters.pop(message_id, None)
 
-        state["active"] = True
-        state["stream_id"] = stream_id
+        # Nothing is active until the new message exists; the previous
+        # message id stays as the session's latest message meanwhile.
+        state.update(active=False, stream_id=None, part_id=None)
         model_state = owner._resolve_opencode_model_state(session_id=session_id)
 
         try:
@@ -1287,13 +1292,13 @@ async def handle_tui_stream_chunk(
                 provider_id=model_state.get("providerID"),
                 variant=model_state.get("variant"),
             )
-            state["message_id"] = message_id
-            state["part_id"] = part_id
-            owner._opencode_message_adapters[message_id] = adapter
         except Exception as exc:
             logger.error("Failed to start OpenCode stream: %s", exc)
-            state["active"] = False
             return
+        state.update(
+            active=True, stream_id=stream_id, message_id=message_id, part_id=part_id
+        )
+        owner._opencode_message_adapters[message_id] = adapter
 
     message_id = state.get("message_id")
     part_id = state.get("part_id")
@@ -1326,6 +1331,7 @@ async def handle_tui_stream_chunk(
                 await adapter.on_stream_end(message_id, part_id)
             except Exception as exc:
                 logger.error("Failed to finalize OpenCode stream: %s", exc)
+            owner._opencode_message_adapters.pop(message_id, None)
         state["active"] = False
         state["stream_id"] = None
         state["message_id"] = message_id
