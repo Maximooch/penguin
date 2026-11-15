@@ -1583,19 +1583,10 @@ class ConversationManager:
         self.agent_session_managers.pop(agent_id, None)
         self.agent_checkpoint_managers.pop(agent_id, None)
         self.agent_context_windows.pop(agent_id, None)
-        if (
-            getattr(self, "context_loader", None)
-            and getattr(self.context_loader, "context_manager", None)
-            is self.conversation
-        ):
-            # Ensure context loader still references active conversation
-            try:
-                self.context_loader.context_manager = self.conversation
-            except Exception:
-                pass
         if self.current_agent_id == agent_id:
-            self.current_agent_id = "default"
-            self.conversation = self.agent_sessions["default"]
+            # Move every "current" binding (conversation, session manager,
+            # checkpoint manager, context window, context loader) together.
+            self.set_current_agent("default")
         return True
 
     def branch_from_snapshot(
