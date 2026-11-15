@@ -1042,6 +1042,9 @@ class PenguinACPAgent:
                     if session.cancelled:
                         for request in self._approvals.get_pending(session_id):
                             self._approvals.deny(request.id)
+                        # The cancel belonged to this turn; requests from work
+                        # that outlives it are asked like any other.
+                        session.cancelled = False
                     session.running = False
                     session.task = None
                     if gate_owned:
