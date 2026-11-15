@@ -1130,7 +1130,11 @@ class PenguinACPAgent:
         self._loop.call_soon_threadsafe(schedule)
 
     async def _request_permission(self, request: ApprovalRequest) -> None:
-        if self._connection is None or self._approvals.get_request(request.id) is None:
+        current = self._approvals.get_request(request.id)
+        if current is None or current.status != ApprovalStatus.PENDING:
+            # Resolved (denied by a cancel, expired) before the dialog ran.
+            return
+        if self._connection is None:
             self._approvals.deny(request.id)
             return
         try:
