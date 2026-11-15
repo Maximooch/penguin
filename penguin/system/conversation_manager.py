@@ -120,8 +120,6 @@ class ConversationManager:
                     f"Checkpoint manager initialized with {len(self.checkpoint_manager.checkpoint_index)} checkpoints"
                 )
 
-                # Workers will start lazily when first checkpoint is created
-
             except Exception as e:
                 logger.warning(f"Failed to initialize checkpoint manager: {e}")
                 self.checkpoint_manager = None

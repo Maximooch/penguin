@@ -166,6 +166,16 @@ on its own.
 - SM-15: a cancelled run saves the conversation before re-raising, so
   completed turns and tool results survive a restart. A tool call left
   without its result by the cancel is saved as it is in memory.
+- SM-22: the checkpoint queue and its two workers are removed. A
+  checkpoint is snapshotted when requested and its file written on a worker
+  thread; with no event loop running (a sync caller), an automatic checkpoint
+  is now written on the spot. Before, it was started in a throwaway loop and
+  lost. `cleanup_old_checkpoints` now runs the cleanup and returns the real
+  count (was always 0).
+- SM-22: an unreadable checkpoint index is kept as
+  `checkpoint_index.json.corrupt` and the index is rebuilt from the
+  checkpoint files, which each hold their own metadata. One bad entry is
+  skipped instead of dropping the whole index.
 
 ## Item format
 
@@ -430,12 +440,13 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     save. Cancelling a completed workflow rewrites it. No recovery of RUNNING
     rows after restart.
   - State: pause and cancel no longer rewrite a finished workflow. Still open: a pause saved by `signal_workflow` can be overwritten by the runner's next save of its own in-memory state; RUNNING rows are not recovered after a restart; the Temporal twin is untouched.
-- [ ] **SM-22 Checkpoint lifecycle** (c)
+- [x] **SM-22 Checkpoint lifecycle** (c)
   - `penguin/system/checkpoint_manager.py:112-300,749`,
     `penguin/system/conversation.py:231-246`
   - The id is returned before the file exists. The live session is
     serialised at dequeue time. Workers can start in a throwaway loop with
     `_workers_started` left True. An index load error resets the index.
+  - State: (done, 2026-11-15) a returned checkpoint id now names a file that exists: `create_checkpoint` snapshots the session when called, writes the file on a worker thread (under a temporary name, renamed when complete) and returns the id only after that, or None if the write failed (the web route already turns None into a 500). Automatic checkpoints from `ConversationSystem.add_message` go through `checkpoint_in_background`, which snapshots before returning, so a checkpoint holds the conversation as of its triggering message. The queue and workers are deleted, so there is nothing left to start in a throwaway loop. An unreadable index is set aside and rebuilt from the checkpoint files; a bad entry is skipped. `tests/system/test_log_inspired_checkpoint_lifecycle.py` tested the deleted workers and is removed; its two cases (a manager reused on a new event loop, a failed write) are covered by the new tests.
 - [ ] **SM-23 Session boundary rollover** (b) (on hold: re-read 2026-11-13. `add_tool_result` attaches `tool_calls` to the last assistant message only when the result arrives, so at rollover time nothing marks the assistant message as awaiting results. Deferring rollover needs a new signal from the engine that a tool group is open; that is a design change.)
   - `penguin/system/conversation.py:256-269,677`,
     `penguin/system/session_manager.py:578-625`,
@@ -775,3 +786,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-16: run record done (2026-11-14). Cancellation response status on hold for a decision.
 - SM-16: decision (2026-11-14) from Maximus: a cancelled chat request keeps returning HTTP 200 with `aborted: true`. Nothing left open on SM-16 apart from the known limits in its State line.
 - SM-15: fixed (2026-11-14). `pytest -q tests/test_engine_loop_termination.py`: 14 passed, 10 red before the fix; `PENGUIN_TEST_BEND=1 pytest -q tests/integrations/test_bend_loop_termination.py`: 5 passed (laws, 4096 + 729 sequences against Python, two mutations rejected); engine, core-runtime, A2A, task, agent, web and API suites: 158 files pass apart from the known `test_resolve_request_runtime_uses_runtime_helper` baseline failure.
+- SM-22: fixed (2026-11-15). `pytest -q tests/system/test_checkpoint_lifecycle.py`: 7 passed, all 7 red before the fix; `tests/system`, checkpoint, conversation, phase-1, CLI-integration and package-export tests: 29 files, 230 passed.

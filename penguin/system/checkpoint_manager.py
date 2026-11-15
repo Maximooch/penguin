@@ -3,7 +3,7 @@ Checkpoint management for Penguin conversation system.
 
 This module implements the conversation plane auto-checkpointing from V2.1 plan:
 - Automatic checkpoint creation on every message
-- Async worker pattern to prevent UI blocking
+- Snapshots taken when requested; files written off the event loop
 - Retention policies for storage management
 - Rollback and branching functionality
 """
@@ -12,15 +12,21 @@ import asyncio
 import gzip
 import json
 import logging
-import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Callable
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
 
 from penguin.system.state import Message, MessageCategory, Session
+
+__all__ = [
+    "CheckpointConfig",
+    "CheckpointManager",
+    "CheckpointMetadata",
+    "CheckpointType",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +82,11 @@ class CheckpointMetadata:
 
 class CheckpointManager:
     """
-    Manages conversation checkpoints with async worker pattern.
+    Manages conversation checkpoints.
 
     Implements the V2.1 conversation plane checkpointing:
     - Auto-checkpoint every message (configurable frequency)
-    - Async workers to prevent UI blocking
+    - Snapshot at request time, file written on a worker thread
     - Retention policies for storage management
     - Rollback and branching functionality
     """
@@ -107,17 +113,14 @@ class CheckpointManager:
         self.checkpoints_path = self.workspace_path / "checkpoints"
         self.checkpoints_path.mkdir(exist_ok=True)
 
-        # Checkpoint index for fast lookups
+        # A cache of the metadata stored in each checkpoint file.
         self.index_path = self.checkpoints_path / "checkpoint_index.json"
         self.checkpoint_index: Dict[str, CheckpointMetadata] = {}
         self._load_checkpoint_index()
 
-        # Async worker setup (queues created lazily in the owning event loop)
-        self.checkpoint_queue: Optional[asyncio.Queue] = None
-        self.cleanup_queue: Optional[asyncio.Queue] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._workers_started = False
-        self._worker_tasks: List[asyncio.Task] = []
+        # Automatic checkpoints being written in the background, kept so the
+        # tasks are not garbage-collected before they finish.
+        self._pending_writes: Set[asyncio.Task] = set()
 
         # Message counter for frequency control
         self._message_counter = 0
@@ -125,44 +128,6 @@ class CheckpointManager:
         logger.info(
             f"CheckpointManager initialized with {len(self.checkpoint_index)} existing checkpoints"
         )
-
-    async def start_workers(self) -> None:
-        """Start the async worker tasks."""
-        if self._workers_started:
-            return
-
-        # Bind queues to the current running loop and spawn workers in the same loop
-        loop = asyncio.get_running_loop()
-        self._loop = loop
-        self.checkpoint_queue = asyncio.Queue()
-        self.cleanup_queue = asyncio.Queue()
-
-        # Start checkpoint worker
-        checkpoint_worker = asyncio.create_task(self._checkpoint_worker())
-        self._worker_tasks.append(checkpoint_worker)
-
-        # Start cleanup worker
-        cleanup_worker = asyncio.create_task(self._cleanup_worker())
-        self._worker_tasks.append(cleanup_worker)
-
-        self._workers_started = True
-        logger.info("Checkpoint workers started")
-
-    async def stop_workers(self) -> None:
-        """Stop the async worker tasks."""
-        if not self._workers_started:
-            return
-
-        # Cancel all worker tasks
-        for task in self._worker_tasks:
-            task.cancel()
-
-        # Wait for tasks to complete
-        await asyncio.gather(*self._worker_tasks, return_exceptions=True)
-
-        self._worker_tasks.clear()
-        self._workers_started = False
-        logger.info("Checkpoint workers stopped")
 
     def should_checkpoint(self, message: Message) -> bool:
         """
@@ -176,18 +141,6 @@ class CheckpointManager:
         """
         if not self.config.enabled or not self.config.planes.get("conversation", True):
             return False
-
-        # Start workers if not already started
-        if not self._workers_started:
-            try:
-                import asyncio
-
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(self.start_workers())
-            except RuntimeError:
-                # No event loop available, workers will start when checkpoint is created
-                pass
 
         # Skip certain system messages
         if message.category == MessageCategory.SYSTEM:
@@ -215,7 +168,10 @@ class CheckpointManager:
         description: Optional[str] = None,
     ) -> Optional[str]:
         """
-        Create a checkpoint for the current conversation state.
+        Write a checkpoint of ``session`` as it is now.
+
+        The snapshot is taken before this coroutine first suspends, so later
+        messages are not included.
 
         Args:
             session: Current session to checkpoint
@@ -225,22 +181,76 @@ class CheckpointManager:
             description: Optional description
 
         Returns:
-            Checkpoint ID if successful, None otherwise
+            The checkpoint id once its file exists, or None if it was not written.
         """
         if not self.config.enabled:
             return None
 
-        # Ensure workers are started
-        if not self._workers_started:
-            await self.start_workers()
+        metadata = self._new_metadata(
+            session, message, checkpoint_type, name, description
+        )
+        stored = session
+        if checkpoint_type in (CheckpointType.BRANCH, CheckpointType.MANUAL):
+            stored = await self._build_flat_snapshot(session)
+        snapshot = self._serialise(metadata, stored)
+        if snapshot is None:
+            return None
+        return await self._store(metadata, snapshot)
 
-        # Generate checkpoint ID
+    def checkpoint_in_background(
+        self, session: Session, message: Message
+    ) -> Optional[asyncio.Task]:
+        """Take an automatic checkpoint of ``session`` as it is now.
+
+        The snapshot is taken before this returns. With an event loop running,
+        the file is written on a worker thread and the returned task finishes
+        when it is; without one, it is written here and None is returned.
+        """
+        if not self.config.enabled:
+            return None
+
+        metadata = self._new_metadata(session, message, CheckpointType.AUTO, None, None)
+        snapshot = self._serialise(metadata, session)
+        if snapshot is None:
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                self._write_checkpoint_file(metadata.id, snapshot)
+            except OSError as exc:
+                logger.error("Could not write checkpoint %s: %s", metadata.id, exc)
+                return None
+            self._add_to_index(metadata)
+            return None
+
+        task = loop.create_task(self._store(metadata, snapshot))
+        self._pending_writes.add(task)
+        task.add_done_callback(self._pending_writes.discard)
+        return task
+
+    async def _store(self, metadata: CheckpointMetadata, snapshot: str) -> Optional[str]:
+        """Write the file on a worker thread, then index it on the event loop."""
+        try:
+            await asyncio.to_thread(self._write_checkpoint_file, metadata.id, snapshot)
+        except OSError as exc:
+            logger.error("Could not write checkpoint %s: %s", metadata.id, exc)
+            return None
+        self._add_to_index(metadata)
+        return metadata.id
+
+    def _new_metadata(
+        self,
+        session: Session,
+        message: Message,
+        checkpoint_type: CheckpointType,
+        name: Optional[str],
+        description: Optional[str],
+    ) -> CheckpointMetadata:
         checkpoint_id = (
             f"cp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         )
-
-        # Create checkpoint metadata
-        metadata = CheckpointMetadata(
+        return CheckpointMetadata(
             id=checkpoint_id,
             type=checkpoint_type,
             created_at=datetime.now().isoformat(),
@@ -252,12 +262,31 @@ class CheckpointManager:
             auto=(checkpoint_type == CheckpointType.AUTO),
         )
 
-        # Enqueue for async processing (queue is guaranteed after start_workers)
-        assert self.checkpoint_queue is not None
-        await self.checkpoint_queue.put(("create", session, metadata))
+    def _serialise(
+        self, metadata: CheckpointMetadata, session: Session
+    ) -> Optional[str]:
+        """Return the checkpoint as JSON text, or None if it cannot be encoded."""
+        try:
+            return json.dumps(
+                {
+                    "metadata": _metadata_to_dict(metadata),
+                    "session": session.to_dict(),
+                }
+            )
+        except (TypeError, ValueError) as exc:
+            logger.error("Could not encode checkpoint %s: %s", metadata.id, exc)
+            return None
 
-        logger.debug(f"Enqueued checkpoint creation: {checkpoint_id}")
-        return checkpoint_id
+    def _write_checkpoint_file(self, checkpoint_id: str, snapshot: str) -> None:
+        """Write a checkpoint file; it appears under its name only when complete."""
+        path = self.checkpoints_path / f"{checkpoint_id}.json.gz"
+        partial = path.with_name(f"{checkpoint_id}.partial")
+        partial.write_bytes(gzip.compress(snapshot.encode("utf-8")))
+        partial.replace(path)
+
+    def _add_to_index(self, metadata: CheckpointMetadata) -> None:
+        self.checkpoint_index[metadata.id] = metadata
+        self._save_checkpoint_index()
 
     async def rollback_to_checkpoint(self, checkpoint_id: str) -> bool:
         """
@@ -435,8 +464,9 @@ class CheckpointManager:
         Returns:
             Number of checkpoints cleaned up
         """
-        await self.cleanup_queue.put("cleanup")
-        return 0  # Actual count will be logged by worker
+        cleaned_count = await self._perform_cleanup()
+        logger.info("Cleaned up %s old checkpoints", cleaned_count)
+        return cleaned_count
 
     def collect_lineage(self, session_id: str) -> List[str]:
         """
@@ -534,84 +564,6 @@ class CheckpointManager:
 
         # Restore original order
         session.messages = list(reversed(messages_to_keep))
-
-    async def _checkpoint_worker(self) -> None:
-        """Async worker that processes checkpoint creation requests."""
-        while True:
-            try:
-                assert self.checkpoint_queue is not None
-                action, session, metadata = await self.checkpoint_queue.get()
-
-                if action == "create":
-                    await self._create_checkpoint_file(session, metadata)
-
-                self.checkpoint_queue.task_done()
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in checkpoint worker: {e}")
-
-    async def _cleanup_worker(self) -> None:
-        """Async worker that processes cleanup requests."""
-        while True:
-            try:
-                assert self.cleanup_queue is not None
-                action = await self.cleanup_queue.get()
-
-                if action == "cleanup":
-                    cleaned_count = await self._perform_cleanup()
-                    logger.info(f"Cleaned up {cleaned_count} old checkpoints")
-
-                self.cleanup_queue.task_done()
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in cleanup worker: {e}")
-
-    async def _create_checkpoint_file(
-        self, session: Session, metadata: CheckpointMetadata
-    ) -> None:
-        """
-        Create the actual checkpoint file.
-
-        Args:
-            session: Session to checkpoint
-            metadata: Checkpoint metadata
-        """
-        try:
-            # Build flattened snapshot if this is a branch or manual checkpoint
-            if metadata.type in [CheckpointType.BRANCH, CheckpointType.MANUAL]:
-                checkpoint_session = await self._build_flat_snapshot(session)
-            else:
-                # For auto checkpoints, just use the current session
-                checkpoint_session = session
-
-            # Create checkpoint data with proper enum serialization
-            metadata_dict = metadata.__dict__.copy()
-            metadata_dict["type"] = metadata.type.value  # Convert enum to string
-
-            checkpoint_data = {
-                "metadata": metadata_dict,
-                "session": checkpoint_session.to_dict(),
-            }
-
-            # Compress and save
-            checkpoint_file = self.checkpoints_path / f"{metadata.id}.json.gz"
-            compressed_data = gzip.compress(json.dumps(checkpoint_data).encode("utf-8"))
-
-            with open(checkpoint_file, "wb") as f:
-                f.write(compressed_data)
-
-            # Update index
-            self.checkpoint_index[metadata.id] = metadata
-            self._save_checkpoint_index()
-
-            logger.debug(f"Created checkpoint file: {metadata.id}")
-
-        except Exception as e:
-            logger.error(f"Error creating checkpoint file {metadata.id}: {e}")
 
     async def _load_checkpoint_session(self, checkpoint_id: str) -> Optional[Session]:
         """
@@ -733,31 +685,58 @@ class CheckpointManager:
             logger.error(f"Error deleting checkpoint {checkpoint_id}: {e}")
 
     def _load_checkpoint_index(self) -> None:
-        """Load the checkpoint index from disk."""
+        """Load the index; rebuild it from the checkpoint files if unreadable.
+
+        The index only caches the metadata each checkpoint file already holds,
+        so an unreadable index is set aside, not overwritten, and rebuilt.
+        """
+        if not self.index_path.exists():
+            return
         try:
-            if self.index_path.exists():
-                with open(self.index_path, "r") as f:
-                    data = json.load(f)
+            data = json.loads(self.index_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("the index is not a JSON object")
+        except (OSError, ValueError) as exc:
+            corrupt = self.index_path.with_name(f"{self.index_path.name}.corrupt")
+            logger.error(
+                "Checkpoint index unreadable (%s); keeping it as %s and "
+                "rebuilding from checkpoint files",
+                exc,
+                corrupt.name,
+            )
+            try:
+                self.index_path.replace(corrupt)
+            except OSError as move_error:
+                logger.error("Could not set the index aside: %s", move_error)
+            self._rebuild_index()
+            return
 
-                # Convert dict data back to CheckpointMetadata objects
-                for cp_id, metadata_dict in data.items():
-                    # Convert type string back to enum
-                    metadata_dict["type"] = CheckpointType(metadata_dict["type"])
-                    self.checkpoint_index[cp_id] = CheckpointMetadata(**metadata_dict)
+        for cp_id, entry in data.items():
+            try:
+                self.checkpoint_index[cp_id] = _metadata_from_dict(entry)
+            except (TypeError, ValueError, KeyError) as exc:
+                logger.warning("Skipping unreadable checkpoint entry %s: %s", cp_id, exc)
 
-        except Exception as e:
-            logger.error(f"Error loading checkpoint index: {e}")
-            self.checkpoint_index = {}
+    def _rebuild_index(self) -> None:
+        """Index every readable checkpoint file and save the result."""
+        for path in sorted(self.checkpoints_path.glob("*.json.gz")):
+            try:
+                data = json.loads(gzip.decompress(path.read_bytes()))
+                metadata = _metadata_from_dict(data["metadata"])
+            except (OSError, EOFError, ValueError, TypeError, KeyError) as exc:
+                logger.warning("Skipping unreadable checkpoint %s: %s", path.name, exc)
+                continue
+            self.checkpoint_index[metadata.id] = metadata
+        self._save_checkpoint_index()
 
     def _save_checkpoint_index(self) -> None:
         """Save the checkpoint index to disk."""
         try:
             # Convert CheckpointMetadata objects to dicts for serialization
-            index_data = {}
-            for cp_id, metadata in self.checkpoint_index.items():
-                metadata_dict = metadata.__dict__.copy()
-                metadata_dict["type"] = metadata.type.value  # Convert enum to string
-                index_data[cp_id] = metadata_dict
+            index_data = {
+                cp_id: _metadata_to_dict(metadata)
+                for cp_id, metadata in self.checkpoint_index.items()
+            }
 
             # Write to temp file first for atomic operation
             temp_path = self.index_path.with_suffix(".tmp")
@@ -769,3 +748,15 @@ class CheckpointManager:
 
         except Exception as e:
             logger.error(f"Error saving checkpoint index: {e}")
+
+
+def _metadata_to_dict(metadata: CheckpointMetadata) -> Dict[str, Any]:
+    data = metadata.__dict__.copy()
+    data["type"] = metadata.type.value
+    return data
+
+
+def _metadata_from_dict(data: Dict[str, Any]) -> CheckpointMetadata:
+    fields = dict(data)
+    fields["type"] = CheckpointType(fields["type"])
+    return CheckpointMetadata(**fields)

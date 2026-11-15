@@ -219,34 +219,12 @@ class ConversationSystem:
         except Exception:
             pass
 
-        # NEW: Auto-checkpoint integration
+        # Auto-checkpoint: the snapshot is taken now; the file is written
+        # off the event loop when one is running.
         if self.checkpoint_manager and self.checkpoint_manager.should_checkpoint(
             message
         ):
-            # Create checkpoint asynchronously to avoid blocking
-            import asyncio
-
-            try:
-                # Try to get the current event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If we're in an async context, create a task
-                    asyncio.create_task(
-                        self.checkpoint_manager.create_checkpoint(self.session, message)
-                    )
-                else:
-                    # If no loop is running, run the checkpoint creation
-                    asyncio.run(
-                        self.checkpoint_manager.create_checkpoint(self.session, message)
-                    )
-            except RuntimeError:
-                # If we can't get a loop, try to run it
-                try:
-                    asyncio.run(
-                        self.checkpoint_manager.create_checkpoint(self.session, message)
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to create checkpoint: {e}")
+            self.checkpoint_manager.checkpoint_in_background(self.session, message)
 
         # Process session through context window manager if available
         if self.context_window:
