@@ -285,9 +285,17 @@ def oauth_record_needs_refresh(
     now_ms: int | None = None,
     refresh_window_ms: int = _DEFAULT_OAUTH_REFRESH_WINDOW_MS,
 ) -> bool:
-    """Return whether an OAuth credential should be proactively refreshed."""
+    """Return whether an OAuth credential should be refreshed now.
+
+    True when the access token is missing but a refresh token is present, or
+    when the access token expires within ``refresh_window_ms``.
+    """
     if credential_record.get("type") != "oauth":
         return False
+    access = credential_record.get("access")
+    if not isinstance(access, str) or not access.strip():
+        refresh = credential_record.get("refresh")
+        return isinstance(refresh, str) and bool(refresh.strip())
     expires = credential_record.get("expires")
     if not isinstance(expires, int):
         return False

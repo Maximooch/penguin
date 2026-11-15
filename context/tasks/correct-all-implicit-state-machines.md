@@ -226,6 +226,11 @@ on its own.
   `agent_capacity`). Another service on the port is no longer reused; the
   launcher then tries to start its own server, which fails on the occupied
   port with an error.
+- SM-50: a stored OpenAI OAuth record that has a refresh token but no
+  access token is now refreshed (`oauth_record_needs_refresh` treats a
+  missing access token as needing refresh). Before, the request failed with
+  "reauth required" while request preparation silently used an
+  environment token.
 - SM-40: when the session gate cannot be taken before the run deadline, the
   goal run now fails with a conflict before any claim is recorded. Before,
   it recorded the claim and then recorded a `timeout` result.
@@ -592,7 +597,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - State: (done, 2026-11-15) `_is_server_running` requires Penguin's health payload, not just HTTP 200; `_wait_for_server` checks that the launcher's own child is still running before it accepts a healthy answer, so a server that took the port after the child exited is not taken for the launcher's own. `main` installs a SIGTERM handler for the launcher's run that exits normally (status 143), so the web server it started is stopped by the existing `finally` and `atexit` cleanup, and restores the previous handler afterwards.
 - [x] **SM-49 Provider OAuth pending flow** (c): `penguin/web/services/provider_auth.py:40-512,1023-1227`; one slot per provider, popped by provider and not by state; four TODOs already name the gaps.
   - State: (partial, 2026-11-15) fixed: each pending authorization gets a `flow_id`, and a completed callback (browser listener or explicit callback) removes the provider's pending entry only if it still holds that flow, so a newer authorization started meanwhile keeps working; the recent-completion fast path now applies only to a caller waiting for the browser flow (no code), so a pasted stale code fails instead of reporting success. Kept: one pending slot per provider (a new authorize replaces the old one by design). Still open: the browser-callback listener binds one host (its TODO), so a `localhost` redirect can miss a `127.0.0.1` listener.
-- [ ] **SM-50 OpenAI OAuth resolve and refresh** (b): `penguin/llm/adapters/openai.py:1019-1145`; resolve and peek duplicate env parsing; refresh writes process-wide state unlocked.
+- [x] **SM-50 OpenAI OAuth resolve and refresh** (b): `penguin/llm/adapters/openai.py:1019-1145`; resolve and peek duplicate env parsing; refresh writes process-wide state unlocked.
+  - State: (done, 2026-11-15) request preparation and the request read OAuth credentials the same way: a stored OAuth record wins, otherwise the environment, parsed once by `_oauth_record_from_env`. Before, preparation skipped a stored record without an access token and routed on an environment token, while the request used the stored record and failed. Not changed: `_apply_oauth_record_to_runtime` still writes `os.environ` and `model_config.api_key`; on one event loop a read that needs no refresh is applied without awaiting, so a stale token cannot overwrite a newer one, and `refresh_provider_oauth` already refreshes once under a lock. Writing to shared config belongs to the ModelConfig ownership decision (SM-35).
 - [ ] **SM-51 ACP session turn** (stale 2026-11-13: `cancel` on main now captures `session.task` before awaiting, so the `None.cancel()` path is gone) (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
 - [ ] **SM-52 Run-mode task WebSocket** (b): `penguin/web/routes.py:6682-6886`; `core._temp_ws_callback` is a single slot.
 - [ ] **SM-53 Sub-agent registry** (b): `penguin/system/conversation_manager.py:224-240,340,501-582,1598`; removing the current agent leaves three "current" pointers stale.
@@ -870,3 +876,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-46: fixed (2026-11-15). `pytest -q tests/test_cli_stream_state.py`: 2 passed, both red before the fix; CLI test files: 27 files, 169 passed apart from the two known `test_cli_surface_audit_regressions.py` baseline failures.
 - SM-48: fixed (2026-11-15). `pytest -q tests/test_opencode_launcher_ownership.py`: 4 passed, 3 red before the fix (the fourth guards that a Penguin server is still recognised); launcher and CLI test files: 28 files, 173 passed apart from the two known `test_cli_surface_audit_regressions.py` baseline failures.
 - SM-49: partly fixed (2026-11-15). `pytest -q tests/web/test_provider_oauth_pending.py`: 3 passed, 2 red before the fix (the third guards that waiting for a just-completed flow still succeeds); every OAuth and provider-auth test file: 21 files, 278 passed.
+- SM-50: fixed (2026-11-15). `pytest -q tests/llm/test_openai_oauth_record_source.py`: 2 passed, the first red before the fix; every OAuth, provider-credential and OpenAI adapter test file: 24 files, 285 passed.

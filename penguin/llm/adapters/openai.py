@@ -107,6 +107,27 @@ def _oauth_trace_flags(record: Dict[str, Any] | None) -> Dict[str, bool]:
     }
 
 
+def _oauth_record_from_env() -> Dict[str, Any] | None:
+    """Build an OAuth record from the ``OPENAI_OAUTH_*`` environment, if set."""
+    access = str(os.getenv("OPENAI_OAUTH_ACCESS_TOKEN") or "").strip()
+    if not access:
+        return None
+    record: Dict[str, Any] = {"type": "oauth", "access": access}
+    refresh = str(os.getenv("OPENAI_OAUTH_REFRESH_TOKEN") or "").strip()
+    if refresh:
+        record["refresh"] = refresh
+    expires_raw = str(os.getenv("OPENAI_OAUTH_EXPIRES_AT_MS") or "").strip()
+    if expires_raw:
+        try:
+            record["expires"] = int(expires_raw)
+        except ValueError:
+            logger.warning("Ignoring invalid OPENAI_OAUTH_EXPIRES_AT_MS")
+    account_id = str(os.getenv("OPENAI_ACCOUNT_ID") or "").strip()
+    if account_id:
+        record["accountId"] = account_id
+    return record
+
+
 class OpenAIAdapter(BaseAdapter):
     """Native OpenAI adapter using the Responses API.
 
@@ -974,8 +995,8 @@ class OpenAIAdapter(BaseAdapter):
                 flags["has_account"],
             )
         else:
-            oauth_access = str(os.getenv("OPENAI_OAUTH_ACCESS_TOKEN") or "").strip()
-            if not oauth_access:
+            env_record = _oauth_record_from_env()
+            if env_record is None:
                 _log_info(
                     "openai.oauth.resolve source=none stored_type=%s env_oauth=%s env_api=%s",
                     record.get("type") if isinstance(record, dict) else None,
@@ -983,25 +1004,7 @@ class OpenAIAdapter(BaseAdapter):
                     bool(str(os.getenv("OPENAI_API_KEY") or "").strip()),
                 )
                 return None
-
-            oauth_record = {
-                "type": "oauth",
-                "access": oauth_access,
-            }
-            refresh = str(os.getenv("OPENAI_OAUTH_REFRESH_TOKEN") or "").strip()
-            if refresh:
-                oauth_record["refresh"] = refresh
-            expires_raw = str(os.getenv("OPENAI_OAUTH_EXPIRES_AT_MS") or "").strip()
-            if expires_raw:
-                try:
-                    oauth_record["expires"] = int(expires_raw)
-                except ValueError:
-                    logger.warning(
-                        "Ignoring invalid OPENAI_OAUTH_EXPIRES_AT_MS during OAuth resolution"
-                    )
-            account_id = str(os.getenv("OPENAI_ACCOUNT_ID") or "").strip()
-            if account_id:
-                oauth_record["accountId"] = account_id
+            oauth_record = env_record
             flags = _oauth_trace_flags(oauth_record)
             _log_info(
                 "openai.oauth.resolve source=env_oauth has_access=%s has_refresh=%s has_expires=%s has_account=%s",
@@ -1049,35 +1052,16 @@ class OpenAIAdapter(BaseAdapter):
         return oauth_record
 
     def _peek_oauth_record_for_prepare(self) -> Dict[str, Any] | None:
-        """Read OAuth route metadata for request preparation without refresh."""
+        """Read OAuth route metadata for request preparation without refresh.
+
+        Uses the same source as ``_resolve_oauth_record_for_request``: a stored
+        OAuth record wins, then the environment.
+        """
 
         record = get_provider_credential("openai")
         if isinstance(record, dict) and record.get("type") == "oauth":
-            access = record.get("access")
-            if isinstance(access, str) and access.strip():
-                return dict(record)
-
-        oauth_access = str(os.getenv("OPENAI_OAUTH_ACCESS_TOKEN") or "").strip()
-        if not oauth_access:
-            return None
-
-        oauth_record: Dict[str, Any] = {
-            "type": "oauth",
-            "access": oauth_access,
-        }
-        refresh = str(os.getenv("OPENAI_OAUTH_REFRESH_TOKEN") or "").strip()
-        if refresh:
-            oauth_record["refresh"] = refresh
-        expires_raw = str(os.getenv("OPENAI_OAUTH_EXPIRES_AT_MS") or "").strip()
-        if expires_raw:
-            try:
-                oauth_record["expires"] = int(expires_raw)
-            except ValueError:
-                pass
-        account_id = str(os.getenv("OPENAI_ACCOUNT_ID") or "").strip()
-        if account_id:
-            oauth_record["accountId"] = account_id
-        return oauth_record
+            return dict(record)
+        return _oauth_record_from_env()
 
     def _apply_oauth_record_to_runtime(self, oauth_record: Dict[str, Any]) -> None:
         access = oauth_record.get("access")
