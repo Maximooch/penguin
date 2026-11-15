@@ -107,30 +107,51 @@ class SQLiteMemoryProvider(MemoryProvider):
                     )
                 """)
                 
-                # Create triggers to keep FTS table in sync
+                # Triggers keep the external-content FTS table in sync. FTS5
+                # reads column values from `memories` by rowid, so every row
+                # is inserted with its rowid and removed with the 'delete'
+                # command carrying the old values. Databases made with the
+                # earlier triggers (no rowid, plain DELETE) are migrated once.
+                old_delete = self._connection.execute(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'trigger' AND name = 'memories_fts_delete'"
+                ).fetchone()
+                migrate = old_delete is not None and "'delete'" not in old_delete[0]
+                if migrate:
+                    for name in ("insert", "delete", "update"):
+                        self._connection.execute(
+                            f"DROP TRIGGER IF EXISTS memories_fts_{name}"
+                        )
+
                 self._connection.execute("""
                     CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories
                     BEGIN
-                        INSERT INTO memories_fts(id, content, categories) 
-                        VALUES (new.id, new.content, new.categories);
+                        INSERT INTO memories_fts(rowid, id, content, categories)
+                        VALUES (new.rowid, new.id, new.content, new.categories);
                     END
                 """)
-                
+
                 self._connection.execute("""
                     CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories
                     BEGIN
-                        DELETE FROM memories_fts WHERE id = old.id;
+                        INSERT INTO memories_fts(memories_fts, rowid, id, content, categories)
+                        VALUES ('delete', old.rowid, old.id, old.content, old.categories);
                     END
                 """)
-                
+
                 self._connection.execute("""
                     CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories
                     BEGIN
-                        DELETE FROM memories_fts WHERE id = old.id;
-                        INSERT INTO memories_fts(id, content, categories) 
-                        VALUES (new.id, new.content, new.categories);
+                        INSERT INTO memories_fts(memories_fts, rowid, id, content, categories)
+                        VALUES ('delete', old.rowid, old.id, old.content, old.categories);
+                        INSERT INTO memories_fts(rowid, id, content, categories)
+                        VALUES (new.rowid, new.id, new.content, new.categories);
                     END
                 """)
+                if migrate:
+                    self._connection.execute(
+                        "INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')"
+                    )
             
             # Create indexes for better performance
             self._connection.execute("CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at)")
