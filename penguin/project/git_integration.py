@@ -205,6 +205,18 @@ class GitIntegration:
             logger.error(f"Unexpected error pushing branch '{branch_name}': {e}")
             return False
     
+    def checkout(self, branch_name: str) -> bool:
+        """Check out an existing branch; return whether it succeeded."""
+        if not self.repo:
+            logger.warning("Git repository not available - cannot check out branch")
+            return False
+        try:
+            self.repo.git.checkout(branch_name)
+            return True
+        except GitCommandError as e:
+            logger.error(f"Failed to check out branch '{branch_name}': {e}")
+            return False
+
     def get_current_branch(self) -> str:
         """
         Gets the name of the current active branch.

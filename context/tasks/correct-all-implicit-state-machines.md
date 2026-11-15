@@ -231,6 +231,10 @@ on its own.
   missing access token as needing refresh). Before, the request failed with
   "reauth required" while request preparation silently used an
   environment token.
+- SM-62: when a task PR fails after its feature branch was created (commit,
+  push or PR creation), the repository is checked out back on the branch it
+  started from. Committed work stays on the feature branch. A successful PR
+  still leaves the feature branch checked out, as before.
 - SM-40: when the session gate cannot be taken before the run deadline, the
   goal run now fails with a conflict before any claim is recorded. Before,
   it recorded the claim and then recorded a `timeout` result.
@@ -620,7 +624,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - State: (done, 2026-11-15) every synchronous lazy tool property (task, skill, memory note, grep, file map, summary notes, notebook, Perplexity, browser, browser-harness and PyDoll tools) now re-checks its flag under one per-manager `RLock` before building, so two tool calls on worker threads build a tool once and get the same object. Before, both could build it and one was silently replaced (two notebook executors, or two browser managers). Not changed: the async `ensure_memory_provider` (a thread lock does not help across its awaits).
 - [x] **SM-61 Memory incremental index** (c): `penguin/memory/indexing/incremental.py:47-142`, `penguin/memory/indexing/metadata.py:38-108`; re-index duplicates entries; non-atomic metadata write.
   - State: (done, 2026-11-15) the index metadata now records the memory id that holds each file, and re-indexing a changed file adds the new memory and then deletes the previous one (added first, so a failed delete leaves a duplicate rather than no memory). Before, every edit left another copy. `IndexMetadata._save_metadata` writes to a `.partial` file and replaces the real one only when complete; before, a failed write left a corrupt file that loaded as empty, so every file was indexed again. Not changed: `remove_from_index` (a deleted file) still removes only metadata, because it is synchronous and the provider's delete is async; and a file queued twice can still be processed by two workers at once.
-- [ ] **SM-62 Git PR flow** (b): `penguin/project/git_manager.py:153-308`; no checkout back to base on failure.
+- [x] **SM-62 Git PR flow** (b): `penguin/project/git_manager.py:153-308`; no checkout back to base on failure.
+  - State: (done, 2026-11-15) `create_pr_for_task` records the current branch before creating the feature branch and, if committing, pushing or opening the PR fails, checks that branch out again (new `GitIntegration.checkout`). Before, the repository stayed on the feature branch and the next task branched from it. Not changed: a successful PR leaves the feature branch checked out; a detached or unknown starting point is not restored.
 
 ## Tier 3: minor, legacy, or probably deletable
 
@@ -891,3 +896,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-59: fixed (2026-11-15). `pytest -q tests/test_browser_harness_cleanup_lock.py`: 1 passed, red before the fix (cleanup ran while a helper call held the lock); `tests/test_browser_harness_tools.py`: 32 passed. No browser is started; the harness modules are fakes.
 - SM-60: fixed (2026-11-15). `pytest -q tests/tools/test_lazy_tool_loading.py`: 1 passed, red before the fix (two executors built); every test file that uses the tool manager: 72 files, 950 passed apart from the known baseline failures.
 - SM-61: fixed (2026-11-15). `pytest -q tests/memory/test_incremental_index_reindex.py`: 2 passed, both red before the fix; every memory test file: 3 files, 48 passed.
+- SM-62: fixed (2026-11-15). `pytest -q tests/test_git_pr_flow_restore.py`: 1 passed, red before the fix (real temporary repository, push fails for lack of a remote); git and workflow-orchestrator test files: 6 run, 11 passed; three workflow files are deselected by the repo's pytest configuration, as before.
