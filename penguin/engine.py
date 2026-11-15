@@ -1745,6 +1745,13 @@ class Engine:
         finish_summary: str | None = None
         provider_error: dict[str, Any] | None = None
 
+        def budget_spent() -> bool:
+            return (
+                config.token_budget is not None
+                and int(cumulative_usage.get("total_tokens", 0) or 0)
+                >= config.token_budget
+            )
+
         # Reset loop state for this run
         self._get_loop_state().reset()
 
@@ -1762,11 +1769,7 @@ class Engine:
 
         try:
             while max_iterations is None or self.current_iteration < max_iterations:
-                if (
-                    config.token_budget is not None
-                    and int(cumulative_usage.get("total_tokens", 0) or 0)
-                    >= config.token_budget
-                ):
+                if budget_spent():
                     completion_status = "budget_limited"
                     break
 
@@ -1891,10 +1894,16 @@ class Engine:
                 )
 
                 # Steering received during this step gets a model turn before
-                # accepting completion. The loop's original budgets still apply.
-                if self.agent_mailbox.has_pending(
-                    self.current_agent_id or self.default_agent_id,
-                    self._conversation_session(cm),
+                # accepting completion, when the budgets allow another turn.
+                # Otherwise a finish signal stands and the message stays
+                # queued for the agent's next run.
+                if (
+                    (max_iterations is None or self.current_iteration < max_iterations)
+                    and not budget_spent()
+                    and self.agent_mailbox.has_pending(
+                        self.current_agent_id or self.default_agent_id,
+                        self._conversation_session(cm),
+                    )
                 ):
                     continue
 
@@ -1933,11 +1942,7 @@ class Engine:
                         )
                     break
 
-                if (
-                    config.token_budget is not None
-                    and int(cumulative_usage.get("total_tokens", 0) or 0)
-                    >= config.token_budget
-                ):
+                if budget_spent():
                     completion_status = "budget_limited"
                     break
 
@@ -2048,11 +2053,7 @@ class Engine:
 
             else:
                 # The loop condition expired without an explicit or guarded break.
-                if (
-                    config.token_budget is not None
-                    and int(cumulative_usage.get("total_tokens", 0) or 0)
-                    >= config.token_budget
-                ):
+                if budget_spent():
                     completion_status = "budget_limited"
                 else:
                     completion_status = limit_status

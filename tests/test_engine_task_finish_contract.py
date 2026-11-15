@@ -1064,7 +1064,10 @@ async def test_late_steering_does_not_extend_token_budget():
     )
     result = await engine.run_task("Work", token_budget=12, enable_events=False)
     assert engine.provider_calls == 1
-    assert result["status"] == "budget_limited"
+    # No turn is left for the steering, so the finish stands (SM-84) and the
+    # message stays queued for the next run.
+    assert result["status"] == "pending_review"
+    assert engine.agent_mailbox.has_pending("default", cm.conversation.session.id)
 
 
 def _length_turns(count: int) -> list[dict[str, Any]]:
