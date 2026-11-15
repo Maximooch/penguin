@@ -2272,6 +2272,28 @@ class ActionExecutor:
     # Sub-agent tools (agents-as-tools)
     # --------------------------------------------------
 
+    def _agent_executor(self, core: Any, *, create: bool) -> Any:
+        """Return the background-agent executor the native tools also use.
+
+        Args:
+            core: The core the agents run in.
+            create: Create the executor when none exists yet.
+
+        Returns:
+            The tool manager's ``AgentExecutor`` (shared with wait, status and
+            shutdown), or the global one when no tool manager can supply it.
+        """
+        getter = getattr(self.tool_manager, "_get_agent_executor", None)
+        if callable(getter) and getattr(self.tool_manager, "_core", None) is core:
+            return getter(create=create)
+        from penguin.multi.executor import AgentExecutor, get_executor, set_executor
+
+        executor = get_executor()
+        if executor is None and create:
+            executor = AgentExecutor(core)
+            set_executor(executor)
+        return executor
+
     async def _spawn_sub_agent(self, params: str) -> str:
         """Spawn a sub-agent; defaults to isolated session and context-window.
 
@@ -2445,16 +2467,7 @@ class ActionExecutor:
             if background:
                 # Run agent in background using AgentExecutor
                 try:
-                    from penguin.multi.executor import (
-                        get_executor,
-                        set_executor,
-                        AgentExecutor,
-                    )
-
-                    executor = get_executor()
-                    if executor is None:
-                        executor = AgentExecutor(core)
-                        set_executor(executor)
+                    executor = self._agent_executor(core, create=True)
 
                     await executor.spawn_agent(
                         agent_id,
@@ -2815,9 +2828,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         cancelled_background = False
         try:
             # Try to cancel background task if running in executor
-            from penguin.multi.executor import get_executor
-
-            executor = get_executor()
+            executor = self._agent_executor(core, create=False)
             if executor:
                 status = executor.get_status(agent_id)
                 if status and status.get("state") in ("pending", "running"):
@@ -3119,17 +3130,9 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         if background:
             # Run delegated task in background using AgentExecutor
             try:
-                from penguin.multi.executor import (
-                    get_executor,
-                    set_executor,
-                    AgentExecutor,
-                )
                 import asyncio
 
-                executor = get_executor()
-                if executor is None:
-                    executor = AgentExecutor(core)
-                    set_executor(executor)
+                executor = self._agent_executor(core, create=True)
 
                 # Check if agent is already running
                 status = executor.get_status(child)

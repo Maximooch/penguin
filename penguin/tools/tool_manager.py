@@ -6602,13 +6602,23 @@ class ToolManager:
             if self._core is None:
                 raise RuntimeError("Core unavailable for background agent execution")
             from penguin.core_runtime.isolation import runtime_isolated
-            from penguin.multi.executor import AgentExecutor, get_executor
-
-            self._agent_executor = (
-                get_executor(self._core)
-                if runtime_isolated()
-                else AgentExecutor(self._core)
+            from penguin.multi.executor import (
+                AgentExecutor,
+                get_executor,
+                set_executor,
             )
+
+            if runtime_isolated():
+                self._agent_executor = get_executor(self._core)
+            else:
+                # One executor per core: ActionXML tags and CLI commands use
+                # the global accessor, so share it when it serves this core.
+                existing = get_executor()
+                if existing is not None and existing._core is self._core:
+                    self._agent_executor = existing
+                else:
+                    self._agent_executor = AgentExecutor(self._core)
+                    set_executor(self._agent_executor)
         return self._agent_executor
 
     async def shutdown_background_agents(self) -> int:
