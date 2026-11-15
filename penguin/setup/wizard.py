@@ -105,10 +105,6 @@ def get_config_path() -> Path:
     return _user_config_dir() / "config.yml"
 
 
-def _setup_complete_path() -> Path:
-    return get_config_path().parent / ".penguin_setup_complete"
-
-
 def _load_config() -> dict[str, Any]:
     path = get_config_path()
     if not path.exists():
@@ -159,14 +155,6 @@ def check_first_run() -> bool:
     return not check_config_completeness()
 
 
-def mark_setup_complete() -> None:
-    path = _setup_complete_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    user = os.getenv("USERNAME") or os.getenv("USER", "user")
-    path.write_text(
-        f"Setup completed on {user}@{platform.node()} at {platform.system()}\n",
-        encoding="utf-8",
-    )
 
 
 def _persist_api_key(provider: str, api_key: str) -> bool:
@@ -351,7 +339,6 @@ async def run_setup_wizard() -> dict[str, Any]:
     saved = save_config(config)
     if saved is None:
         return {"error": "Failed to save configuration"}
-    mark_setup_complete()
 
     console.print("\n[bold green]Penguin is ready.[/bold green]")
     console.print(f"Workspace: [cyan]{workspace_path}[/cyan]")

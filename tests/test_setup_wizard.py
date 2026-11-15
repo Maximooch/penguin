@@ -101,7 +101,8 @@ def test_onboarding_can_skip_ai_without_openrouter_or_model_config(
     assert result["model"] is None
     saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert saved["model"] is None
-    assert (config_path.parent / ".penguin_setup_complete").exists()
+    # Completion is read from the saved workspace config; no marker file.
+    assert wizard.check_first_run() is False
     for directory in wizard.WORKSPACE_DIRS:
         assert (workspace_path / directory).is_dir()
 
