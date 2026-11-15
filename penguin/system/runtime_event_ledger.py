@@ -36,14 +36,15 @@ class RuntimeEventLedgerPolicy:
     """Retention and cleanup policy for the runtime event ledger.
 
     Attributes:
-        max_events: Maximum retained event rows before oldest-row cleanup.
+        max_events: Maximum retained event rows before oldest-row cleanup;
+            ``None`` or 0 means no count limit, like the other limits.
         max_age_seconds: Optional event-age retention window in seconds.
         max_bytes: Optional soft on-disk size limit for the SQLite database and
             WAL sidecar.
         cleanup_interval_seconds: Minimum seconds between automatic cleanups.
     """
 
-    max_events: int = DEFAULT_LEDGER_MAX_EVENTS
+    max_events: int | None = DEFAULT_LEDGER_MAX_EVENTS
     max_age_seconds: int | None = DEFAULT_LEDGER_MAX_AGE_DAYS * 24 * 60 * 60
     max_bytes: int | None = DEFAULT_LEDGER_MAX_BYTES
     cleanup_interval_seconds: float = DEFAULT_LEDGER_CLEANUP_INTERVAL_SECONDS
@@ -87,7 +88,7 @@ def policy_from_env() -> RuntimeEventLedgerPolicy:
         settings, with defaults for missing or malformed values.
     """
     return RuntimeEventLedgerPolicy(
-        max_events=_env_int(
+        max_events=_env_optional_int(
             "PENGUIN_RUNTIME_EVENT_LEDGER_MAX_EVENTS",
             DEFAULT_LEDGER_MAX_EVENTS,
         ),
@@ -496,8 +497,7 @@ class RuntimeEventLedger:
         conn.execute("DELETE FROM runtime_events WHERE event_time < ?", (cutoff_ms,))
 
     def _cleanup_by_count(self, conn: sqlite3.Connection) -> None:
-        if self.policy.max_events <= 0:
-            conn.execute("DELETE FROM runtime_events")
+        if self.policy.max_events is None or self.policy.max_events <= 0:
             return
         count = conn.execute("SELECT COUNT(*) AS count FROM runtime_events").fetchone()[
             "count"
@@ -722,16 +722,6 @@ def _string_or_none(value: Any) -> str | None:
 
 def _positive_int_or_zero(value: Any) -> int:
     return value if isinstance(value, int) and value > 0 else 0
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw == "":
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
 
 
 def _env_optional_int(name: str, default: int | None) -> int | None:

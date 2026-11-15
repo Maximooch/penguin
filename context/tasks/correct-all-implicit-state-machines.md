@@ -269,6 +269,10 @@ on its own.
   such a run ended `iterations_exceeded` or `budget_limited`;
   `test_late_steering_does_not_extend_token_budget` pinned `budget_limited`
   and now expects `pending_review` (it still checks one provider call).
+- SM-94: `PENGUIN_RUNTIME_EVENT_LEDGER_MAX_EVENTS=0` (or `off`, `none`,
+  `disabled`) now means no count limit, as `0`/`off` already did for the
+  size limit and a zero age limit did for age. Before, `0` emptied the ledger
+  on every cleanup. `RuntimeEventLedgerPolicy.max_events` accepts `None`.
 
 ## Item format
 
@@ -731,7 +735,7 @@ independently.
   - State: (2026-11-15) fixed: `ProcessTracker` records a completion for a session that was closed while its process ran (no update is sent to the closed session), and the "unresolved" decision is one method, `ProcessTracker.unresolved(root)`, used by `delete_session` and the isolated close. When a closed root's last process ends, the tracker calls the agent's `on_root_resolved` hook; `IsolatedACPAgent` uses it to release that root's runtime (under the allocation lock, only if the root is still closed and idle), so a pinned runtime no longer counts against the limit until a reload.
 - [x] **SM-89 ACP `cancelled` outlives its turn** (b): `penguin/integrations/acp/server.py:874,1024,1057` reset it only when the next prompt starts, so background approvals and questions after a cancelled turn are silently denied. Correction: clear it when the turn ends.
   - State: (2026-11-15) fixed: a turn's `finally` in `PenguinACPAgent.prompt` clears `session.cancelled` after denying that turn's pending approvals, so the flag means "this turn is cancelled" only while the turn runs. Before, it stayed set until the next prompt, and approvals and questions from work that outlived a cancelled turn were silently denied. An answer to a permission prompt already in flight still cannot approve its request, which is DENIED by then.
-- [ ] **SM-90 Windows stop cannot kill descendants after the shell exits** (b) [inferred]: `penguin/tools/process_runtime.py:548` tree-kills on Windows only while `poll() is None`; POSIX still kills the group (`:580-592`). Correction: tree-kill the retained pid on Windows too. Needs a Windows run to confirm.
+- [ ] **SM-90 Windows stop cannot kill descendants after the shell exits** (on hold 2026-11-15: needs a Windows run to reproduce; this machine is macOS) (b) [inferred]: `penguin/tools/process_runtime.py:548` tree-kills on Windows only while `poll() is None`; POSIX still kills the group (`:580-592`). Correction: tree-kill the retained pid on Windows too. Needs a Windows run to confirm.
 - [x] **SM-91 FAISS deletes and updates leave orphan vectors** (c): `penguin/memory/providers/faiss_provider.py:229-261` removes metadata only or appends a new vector; search drops orphan hits (`:169-182`), and the SM-61 re-index makes one orphan per edit, so a memory that exists stops being found. Correction: an id-mapped index with removal.
   - State: (2026-11-15) fixed: the FAISS provider keeps an id-mapped index (`IndexIDMap2`) with one vector per live memory, recorded as `vector_id` in its metadata. An update removes the memory's vector and adds the new one; a delete removes it; search maps result ids straight to memories instead of scanning positions. An index saved in the earlier positional format (or with orphans) is rebuilt once at initialise by re-encoding each stored memory's content.
 - [x] **SM-92 SQLite FTS5 external-content triggers drift** (c) [inferred]: `penguin/memory/providers/sqlite_provider.py:101-133` inserts without `rowid` and deletes with a plain `DELETE`, which FTS5 external-content tables do not support. Correction: the documented `'delete'` command form, then a rebuild.
@@ -740,7 +744,8 @@ independently.
 ### Tier 2
 
 - [ ] **SM-93 Memory provider readiness** (b): `penguin/web/routes.py:7708-7825`, `penguin/tools/tool_manager.py:2678-2721`, `penguin/memory/providers/sqlite_provider.py:76-156`; three paths create or initialise the provider and test different fields, so a failed initialise leaves a connection that accepts writes without FTS, and some routes 500 until a search has run.
-- [ ] **SM-94 `LEDGER_MAX_EVENTS=0` empties the ledger** (a): `penguin/system/runtime_event_ledger.py:89-92,473-475`; the other three ledger settings treat 0 as "no limit".
+- [x] **SM-94 `LEDGER_MAX_EVENTS=0` empties the ledger** (a): `penguin/system/runtime_event_ledger.py:89-92,473-475`; the other three ledger settings treat 0 as "no limit".
+  - State: (2026-11-15) fixed: the event-count limit is optional like the size and age limits: `0`, `off`, `none` or `disabled` means no count limit, and `_cleanup_by_count` no longer deletes every row for a limit of 0. The docs table says so. The unused `_env_int` is deleted. See "Decisions taken while away".
 - [ ] **SM-95 Cross-process session index merge** (c): `penguin/system/session_manager.py:193-221` merges with a process-local lock and never rewrites entries it did not change, so two processes can lose an index entry until restart.
 - [ ] **SM-96 Audit logger replaced by each isolated runtime** (c): `penguin/tools/tool_manager.py:2452-2476` rebinds the module-global logger in `penguin/security/audit.py:412-450`.
 - [ ] **SM-97 Request-scoped providers outlive the request** (b): `penguin/tools/providers/client.py:11-21` and `mcp.py:26-38` are context variables that background agents inherit (`penguin/multi/executor.py:179`) after the ACP session that set them closed.
@@ -1044,3 +1049,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-87: fixed (2026-11-15), in the SM-86 commit; see SM-86.
 - SM-92: fixed (2026-11-15). `pytest -q tests/memory/test_sqlite_fts_sync.py`: 2 passed, both red on the old provider (a search for updated text returned a different memory; an old database stayed wrong); memory and diagnostics test files: 7 files, all passed (one is fully marker-deselected).
 - SM-91: fixed (2026-11-15). `pytest -q tests/memory/test_faiss_vector_lifecycle.py`: 3 passed; the first two were red before the fix (a memory updated back and forth was not found; the index kept every old vector) and the third fails on the old provider (a positional index with an orphan was kept). Memory test files: 9 passed. Uses a deterministic fake encoder, not a downloaded model.
+- SM-94: fixed (2026-11-15). `pytest -q tests/api/test_runtime_event_ledger_limits.py`: 4 passed; `0` was red before the fix (the ledger was emptied). Every runtime-event, ledger, SSE and event-service test file in one process passes.
