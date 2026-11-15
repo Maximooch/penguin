@@ -210,6 +210,15 @@ on its own.
   tool-only stall statuses, so a stuck goal waits for the user instead of
   continuing on its own. A run that ends with a plain answer keeps
   `completed` or `implicit_completion`.
+- SM-40: a goal-run claim now names its host and pid. A claim held by
+  another live process on the same host is refused ("running in another
+  Penguin process") instead of being recovered as orphaned. If that pid has
+  been reused by an unrelated process, the run is refused rather than run
+  twice. Claims from another host, or in the older id format, are still
+  recovered as before.
+- SM-40: when the session gate cannot be taken before the run deadline, the
+  goal run now fails with a conflict before any claim is recorded. Before,
+  it recorded the claim and then recorded a `timeout` result.
 
 ## Item format
 
@@ -555,7 +564,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - State: (partial, 2026-11-15) fixed: a guard stop is no longer reported as a finished run; it carries its reason (`repeated_response`, `tool_result_echo`, `empty_responses`) in both modes, and a plain answer still ends with the default status. Needs Maximus: "recovery never re-arms" is what the human-owned law `recovery_at_most_once` in `prototypes/bend_loop_recovery/LAWS.bend` requires; re-arming after progress would need that law changed (and a cap on recoveries per run, or alternating stall and progress never ends). Not done: the guard's counters still reset in four places (each guard resets its own counter on progress); folding them into one pure decision, which the Bend lane would model, is left for a later pass.
 - [x] **SM-39 Per-session stream state dict** (c): `penguin/core_runtime/stream_events.py:68-85,448,1247-1349`; `active` with no message id exists across an await; adapter map entries leak. Blocked by SM-16.
   - State: (done, 2026-11-15) `handle_tui_stream_chunk` no longer marks a new stream active before its message exists: the state is set inactive (keeping the previous message as the session's latest) while `on_stream_start` runs, then active, stream id, message id and part id are set together. A stream that this module ends (switching streams, the final chunk, or an abort that force-finalizes) now removes its entry from `_opencode_message_adapters`; usage arriving later falls back to the session's cached adapter, which is the same instance. `test_handle_tui_stream_chunk_starts_tracks_and_finalizes_stream` asserted the leaked entry and now asserts its removal.
-- [ ] **SM-40 Session-goal run claim** (c): `penguin/core_runtime/session_goal_runtime.py:741-1079`; gate checked at 844 and acquired at 883; orphan test assumes one process per workspace.
+- [x] **SM-40 Session-goal run claim** (c): `penguin/core_runtime/session_goal_runtime.py:741-1079`; gate checked at 844 and acquired at 883; orphan test assumes one process per workspace.
+  - State: (done, 2026-11-15) the session gate is taken in the run's own task before the claim is recorded (an unlocked gate is taken without waiting), so no other request can hold the session while the goal record says the goal is running; if saving the claim fails the gate is released. Orphan recovery no longer assumes one process per workspace: a claim whose owner is a live process on this host is refused with a conflict; only claims whose owner process is gone, or that come from another host or an older owner-id format, are recovered.
 - [ ] **SM-41 RunMode singleton lifecycle** (b): `penguin/core_runtime/runmode_lifecycle.py:29-92`; no re-entrancy guard.
 - [ ] **SM-42 MCP connection lifecycle** (on hold 2026-11-13: retrying discovery after every failure changes how often servers are contacted; needs a retry policy decision) (b): `penguin/tools/providers/mcp.py:22-115`, `penguin/integrations/mcp/manager.py:71-503`; a failed discovery is sticky; (FAILED, session set) is representable; `_ensure_actor` is unlocked; `list_changed` is never consumed.
 - [x] **SM-43 Plugin lifecycle** (b): `penguin/plugins/plugin_manager.py:52-483`; parallel load looks like a deadlock (not run); action unregistration compares the wrong name.
@@ -839,3 +849,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-37: fixed (2026-11-15). `pytest -q tests/test_model_switch_atomic.py`: 2 passed, the failed-switch test red before the fix; model runtime, facade, provider-resolution and route model tests: 9 files pass apart from the known `test_resolve_request_runtime_uses_runtime_helper` baseline failure.
 - SM-38: partly fixed (2026-11-15). `pytest -q tests/test_engine_loop_termination.py`: 18 passed, the 4 new guard-stop cases red before the fix; engine, run-mode, goal and engine-caller test files: 35 files, 385 passed.
 - SM-39: fixed (2026-11-15). `pytest -q tests/core_runtime/test_stream_state_lifecycle.py`: 2 passed, both red before the fix; `tests/core_runtime` and every stream-state test file: 65 files, 914 passed after updating the one test that pinned the leak.
+- SM-40: fixed (2026-11-15). `pytest -q tests/core_runtime/test_session_goal_claim.py`: 2 passed, both red before the fix; every session-goal test file: 9 files, 200 passed.
