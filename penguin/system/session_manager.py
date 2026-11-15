@@ -398,10 +398,21 @@ class SessionManager:
                     self._add_to_session_cache(session_id, session)
                     self.current_session = session
 
-                    # Restore from backup
-                    atomic_write_text(
-                        primary_path, backup_path.read_text(encoding="utf-8")
-                    )
+                    # Rewrite the primary from the backup. The session is
+                    # already loaded, so a failed rewrite only leaves the
+                    # primary broken until the next save replaces it.
+                    try:
+                        atomic_write_text(
+                            primary_path, backup_path.read_text(encoding="utf-8")
+                        )
+                    except OSError:
+                        logger.warning(
+                            "Restored session %s from backup but could not "
+                            "rewrite its primary file %s",
+                            session_id,
+                            primary_path,
+                            exc_info=True,
+                        )
                     logger.warning(f"Successfully restored session {session_id} from backup")
                     return session
         except Exception as backup_error:
