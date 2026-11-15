@@ -51,7 +51,7 @@ async def test_run_task_delegates_to_iteration_loop_and_preserves_task_metadata(
     assert config.termination_action == "finish_task"
     assert config.enable_events is True
     assert config.message_callback is None
-    assert config.default_completion_status == "iterations_exceeded"
+    assert config.default_completion_status == "implicit_completion"
     assert config.task_metadata["id"] == "task-123"
     assert config.task_metadata["name"] == "Important Task"
     assert config.task_metadata["context"] == {"project_id": "p1"}

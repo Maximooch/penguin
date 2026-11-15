@@ -224,7 +224,11 @@ class PenguinA2AExecutor(AgentExecutor):
             "working",
         } or response.get("recoverable"):
             return
-        if response.get("status") in {"error", "provider_error"}:
+        if response.get("status") in {
+            "error",
+            "provider_error",
+            "llm_empty_response_error",
+        }:
             await updater.failed()
             return
         if response.get("error"):

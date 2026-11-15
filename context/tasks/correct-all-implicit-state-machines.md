@@ -149,6 +149,23 @@ on its own.
   flight, an active stream, or its TUI adapter). Before, the sources
   overwrote each other in turn, so an adapter reporting idle hid a stream
   that was still running.
+- SM-15: `run_response` now runs the same loop as `run_task`, so its
+  results change where the two had drifted apart: a stop request reports
+  `stopped` (was `completed`); a `finish_response` call whose tool status is
+  not `completed` no longer ends the run; an empty provider answer reports
+  `llm_empty_response_error` (was `error`; A2A now fails the task on it); the
+  output-limit cap reports `max_iterations` (was `completed`); usage is kept
+  on a failed run (was `{}`). The error text in `assistant_response` is
+  unchanged. A failure while preparing the conversation, before the first
+  turn, now raises to `core.process` instead of returning an `error` result.
+- SM-15: malformed tool syntax gets at most 3 repair turns
+  (`MAX_MALFORMED_ACTION_REPAIRS`); the run then stops with the iteration-limit
+  status (`max_iterations` or `iterations_exceeded`) rather than a new status,
+  so goal and RunMode consumers treat it as "limit reached, progress saved".
+  The output-limit and repair counters reset only after an ordinary turn.
+- SM-15: a cancelled run saves the conversation before re-raising, so
+  completed turns and tool results survive a restart. A tool call left
+  without its result by the cancel is saved as it is in memory.
 
 ## Item format
 
@@ -345,7 +362,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one retry owner (the runtime); adapters never re-request.
   - Blocked by: SM-12
   - State: (done, 2026-11-14) the runtime's `call_with_retry` is the only layer that replays a failed attempt. The OpenAI SDK-to-HTTP fallback now runs only when the SDK fails before its first event (`_SdkStreamUnavailable`), so it can no longer stream an answer twice; a mid-stream transport failure is a retryable network error and also drops partial tool calls. Link's loop is connection backoff before any output and stays. The differing error sentinels are SM-33's.
-- [ ] **SM-15 Turn-loop termination, two copies** (a in b) [bend, design]
+- [x] **SM-15 Turn-loop termination, two copies** (a in b) [bend, design]
   - `penguin/engine.py:1679-2060,2306-2451`
   - The task loop and `run_response` disagree on stop, finish-tool status and
     empty responses. The `LENGTH` and malformed-action continues have no
@@ -353,6 +370,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one `LoopOutcome` reducer both loops call; bound every
     continue.
   - State: (partial, 2026-11-13) the output-limit continuation is bounded at 8 consecutive turns in both loops; the task loop then reports `iterations_exceeded`. Still open: the single `LoopOutcome` reducer; the stop, finish-tool and empty-response differences between the two loops; the malformed-action repair continue, which is still unbounded without an iteration cap; `CancelledError` skipping save and stream abort.
+  - State: (done, 2026-11-14) one loop: `run_response` now runs `Engine._iteration_loop` like `run_task`, and its own copy of the loop (about 200 lines) is deleted, so stop, finish-tool and empty-response handling no longer differ between the two (results listed under "Decisions taken while away"). Every recovery continue is bounded with no iteration cap: output-limit turns at 8 and malformed-syntax repair turns at 3, both counters reset only by an ordinary turn, so alternating them still ends within 12 turns. A cancelled run saves the conversation before re-raising; the provider step already discarded the uncommitted stream on any failure. Bend model in `prototypes/bend_loop_termination` (draft laws await review) matches Python on all 4825 sequences checked. No separate `LoopOutcome` reducer: with one loop there is nothing left to keep in agreement. Unblocks SM-38.
 - [x] **SM-16 Session abort, request accounting and busy/idle** (c) [design]
   - `penguin/core_runtime/process_lifecycle.py:30-313`,
     `penguin/core_runtime/stream_events.py:244-325,417-547,1031`,
@@ -756,3 +774,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-33: done (2026-11-14). One call-outcome rule. Flaky under full-suite load, passes alone 3/3: tests/tools/test_log_inspired_process_faults.py::test_callback_exceptions_do_not_fake_failure_or_leak_child.
 - SM-16: run record done (2026-11-14). Cancellation response status on hold for a decision.
 - SM-16: decision (2026-11-14) from Maximus: a cancelled chat request keeps returning HTTP 200 with `aborted: true`. Nothing left open on SM-16 apart from the known limits in its State line.
+- SM-15: fixed (2026-11-14). `pytest -q tests/test_engine_loop_termination.py`: 14 passed, 10 red before the fix; `PENGUIN_TEST_BEND=1 pytest -q tests/integrations/test_bend_loop_termination.py`: 5 passed (laws, 4096 + 729 sequences against Python, two mutations rejected); engine, core-runtime, A2A, task, agent, web and API suites: 158 files pass apart from the known `test_resolve_request_runtime_uses_runtime_helper` baseline failure.
