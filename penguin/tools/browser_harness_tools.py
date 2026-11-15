@@ -375,9 +375,9 @@ class BrowserHarnessAdapter:
         self,
         owned_only: bool,
         force: bool,
-        name: Optional[str],
+        name: str | None,
         dry_run: bool,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         target_name = _slug(name or self.name)
         record = self.ownership_store.get(target_name)
         owned_by_penguin = bool(record and record.get("started_by_penguin"))
