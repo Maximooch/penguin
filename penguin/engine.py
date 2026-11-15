@@ -806,7 +806,7 @@ class Engine:
         return request_id, session_id
 
     @staticmethod
-    def _conversation_session_id(cm: Any) -> Optional[str]:
+    def _conversation_session(cm: Any) -> Any:
         try:
             session = (
                 cm.get_current_session() if hasattr(cm, "get_current_session") else None
@@ -815,6 +815,11 @@ class Engine:
             session = None
         if session is None:
             session = getattr(getattr(cm, "conversation", None), "session", None)
+        return session
+
+    @staticmethod
+    def _conversation_session_id(cm: Any) -> Optional[str]:
+        session = Engine._conversation_session(cm)
         return getattr(session, "id", None) if session is not None else None
 
     @staticmethod
@@ -1889,7 +1894,7 @@ class Engine:
                 # accepting completion. The loop's original budgets still apply.
                 if self.agent_mailbox.has_pending(
                     self.current_agent_id or self.default_agent_id,
-                    self._conversation_session_id(cm) or "",
+                    self._conversation_session(cm),
                 ):
                     continue
 

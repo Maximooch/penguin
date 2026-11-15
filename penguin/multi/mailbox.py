@@ -11,6 +11,29 @@ from penguin.system.state import MessageCategory
 __all__ = ["AgentMailbox"]
 
 
+def _session_ids(session: Any) -> list[str]:
+    """Return a session's id and the id of the session it continues.
+
+    Args:
+        session: A session object, or a session id.
+
+    Returns:
+        The current id first. A continuation session (made when a session
+        reaches its boundary) also owns steering queued for its predecessor.
+    """
+    if isinstance(session, str):
+        return [session] if session else []
+    session_id = getattr(session, "id", None)
+    if not session_id:
+        return []
+    ids = [session_id]
+    metadata = getattr(session, "metadata", None)
+    previous = metadata.get("continued_from") if isinstance(metadata, dict) else None
+    if isinstance(previous, str) and previous:
+        ids.append(previous)
+    return ids
+
+
 class AgentMailbox:
     """Keep messages off mutable transcripts until a safe step boundary."""
 
@@ -24,9 +47,14 @@ class AgentMailbox:
 
     def deliver(self, agent_id: str, manager: Any) -> None:
         """Persist queued steering before formatting the next provider request."""
-        session_id = getattr(getattr(manager.conversation, "session", None), "id", None)
-        if not session_id:
+        ids = _session_ids(getattr(manager.conversation, "session", None))
+        if not ids:
             return
+        session_id = ids[0]
+        for previous in ids[1:]:
+            carried = self._pending.pop((agent_id, previous), None)
+            if carried:
+                self._pending[agent_id, session_id].extendleft(reversed(carried))
         pending = self._pending.get((agent_id, session_id))
         while pending:
             message = pending[0]
@@ -74,9 +102,17 @@ class AgentMailbox:
             session_id=session_id, last_progress_at=time.time(), phase=phase
         )
 
-    def has_pending(self, agent_id: str, session_id: str) -> bool:
-        """Return whether this session has steering for its next step."""
-        return bool(self._pending.get((agent_id, session_id)))
+    def has_pending(self, agent_id: str, session: Any) -> bool:
+        """Return whether this session has steering for its next step.
+
+        Args:
+            agent_id: Recipient agent.
+            session: The agent's current session object, or a session id.
+        """
+        return any(
+            self._pending.get((agent_id, session_id))
+            for session_id in _session_ids(session)
+        )
 
     def remove(self, agent_id: str) -> None:
         """Drop stale queues when an agent is explicitly unregistered."""
