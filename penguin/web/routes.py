@@ -2459,8 +2459,9 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
         ui_handlers.append((event_type.value, _on_ui_event))
 
     try:
-        while True:
-            await asyncio.sleep(1.0)
+        # Read the socket so a disconnect is seen; client messages are ignored.
+        while (await websocket.receive()).get("type") != "websocket.disconnect":
+            pass
     except WebSocketDisconnect:
         pass
     finally:

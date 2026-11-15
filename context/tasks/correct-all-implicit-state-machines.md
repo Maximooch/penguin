@@ -252,6 +252,16 @@ on its own.
 - SM-40: when the session gate cannot be taken before the run deadline, the
   goal run now fails with a conflict before any claim is recorded. Before,
   it recorded the claim and then recorded a `timeout` result.
+- SM-75: `ProjectManager` no longer caches the task DAG. `build_dag` reads
+  the tasks on every call; its `force` argument and `invalidate_dag` are
+  removed (no callers outside the manager, none in docs). Before, stats and
+  the DOT export showed the graph from the first build until a blueprint
+  sync. A runtime job in `completed`, `failed` or `cancelled` now ignores
+  later upserts with a different status. `penguin/project/resilience.py`
+  (`CircuitBreaker`, retry helpers) is deleted: its one import, in
+  `git_manager.py`, used none of it. `PenguinState` (exported from
+  `penguin.system`) has no callers in the repo; it is fixed, not deleted,
+  and is a deletion candidate for Maximus.
 
 ## Item format
 
@@ -669,7 +679,8 @@ Check for callers first. If there are none, delete.
   - State: (done, 2026-11-15) deleted: `mark_setup_complete` and `_setup_complete_path`. The `.penguin_setup_complete` marker (holding the user name and host name) was written after setup and never read; `check_first_run` deliberately reads the saved workspace config instead. Marker files already on disk are left alone. `tests/test_setup_wizard.py` asserted the marker and now asserts `check_first_run()` is false after setup.
 - [x] **SM-74 Skills activation, QuestionManager, ProcessWaitGuard** (b): `penguin/skills/manager.py:21-112`, `penguin/security/question.py:73-257`, `penguin/tools/process_wait.py:17`; unpruned sets and no expiry.
   - State: (partial, 2026-11-15) fixed: `QuestionManager` keeps at most 1000 resolved questions (`MAX_RESOLVED_QUESTIONS`), dropping the oldest, like approval history (SM-04); before, every answered or rejected question stayed for the life of the process. Checked and left: `ProcessWaitGuard` progress is cleared at the start of every run (`LoopState.reset`). Left: `SkillManager` keeps one small set of activated skill names per session ever seen; it has no session-end hook to prune from.
-- [ ] **SM-75 Small singletons and slots**: `CircuitBreaker` string state (`penguin/project/resilience.py:97`), `RuntimeJobRecord.status` upsert (`penguin/project/storage.py:488`), `PenguinState._previous_state` (`penguin/system/state.py:471`), DAG cache invalidation (`penguin/project/manager.py:1340`), MessageBus drop (`penguin/system/message_bus.py:92`), VCS watcher slot (`penguin/web/services/system_status.py:20`), title refresh tasks (`penguin/web/routes.py:963`), `events_ws` (`penguin/web/routes.py:2367`), connection pool `close_all` (`penguin/llm/api_client.py:164`), core/app singletons (`penguin/web/app.py:36,212`).
+- [x] **SM-75 Small singletons and slots**: `CircuitBreaker` string state (`penguin/project/resilience.py:97`), `RuntimeJobRecord.status` upsert (`penguin/project/storage.py:488`), `PenguinState._previous_state` (`penguin/system/state.py:471`), DAG cache invalidation (`penguin/project/manager.py:1340`), MessageBus drop (`penguin/system/message_bus.py:92`), VCS watcher slot (`penguin/web/services/system_status.py:20`), title refresh tasks (`penguin/web/routes.py:963`), `events_ws` (`penguin/web/routes.py:2367`), connection pool `close_all` (`penguin/llm/api_client.py:164`), core/app singletons (`penguin/web/app.py:36,212`).
+  - State: (2026-11-15) fixed: a runtime job upsert no longer changes a terminal status (`completed`, `failed`, `cancelled`) unless the new status is the same, so a late cancel request cannot reopen a finished job; `PenguinState` keeps one previous state per system, so resuming one system no longer restores another system's state; the task DAG is rebuilt on every call instead of cached until a blueprint sync (other modules write tasks straight to storage, so no cache could stay in step); pending `vcs.branch.updated` emits are kept in a set until done (the single slot let the garbage collector destroy a pending emit when two scopes changed together); `events_ws` reads the socket, so a client that leaves ends the handler and unsubscribes it from both event buses (before, each one stayed subscribed until shutdown); `ConnectionPoolManager.close_all` takes the clients out of the pool before closing them, so `get_client` never returns a closing client and a client made meanwhile is not dropped unclosed. Deleted: `penguin/project/resilience.py` (`CircuitBreaker`), unused. Checked and left: `MessageBus.send` already returns `False` and logs when no handler takes a message; title refresh tasks are deduped per session and hold strong references (a cancelled one logs noise from its done callback); the app core is one lazily made instance per process.
 - [ ] **SM-76 Second sweep** of the directories listed as not opened, and of any file touched since `36e32f623`.
 
 ## Changes on main since the sweep
@@ -929,3 +940,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-71: partly fixed (2026-11-15). `pytest -q tests/test_env_file_precedence.py`: 1 passed, red before the fix (the project file replaced the shell value); config test files: 21 files, 147 passed apart from the two known `test_cli_surface_audit_regressions.py` baseline failures.
 - SM-73: fixed (2026-11-15). `pytest -q tests/test_setup_wizard.py`: 12 passed after replacing the marker assertion with the real completion check.
 - SM-74: partly fixed (2026-11-15). `pytest -q tests/test_question_history_bound.py`: 1 passed, red before the fix; question-manager test files: 29 passed.
+- SM-75: fixed (2026-11-15). Six new tests, each red before its fix: `tests/test_runtime_job_terminal_status.py`, `tests/system/test_penguin_state_resume.py`, `tests/test_project_dag_freshness.py`, `tests/api/test_vcs_emit_tasks_kept.py`, `tests/web/test_events_ws_disconnect.py`, `tests/llm/test_connection_pool_close_race.py`. Related test files: 41 files, all passed (marker-deselected files excluded).

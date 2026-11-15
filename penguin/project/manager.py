@@ -71,10 +71,6 @@ class ProjectManager:
         except ImportError:
             logger.warning("EventBus not available - events will be disabled")
         
-        # DAG scheduler state
-        self._dag: Optional[nx.DiGraph] = None
-        self._dag_project_id: Optional[str] = None
-        
         # Default tie-breaker order for DAG frontier selection
         self._tie_breakers: List[str] = [
             "priority_desc",
@@ -944,19 +940,19 @@ class ProjectManager:
     
     # ==================== DAG Scheduling ====================
     
-    def build_dag(self, project_id: str, force: bool = False) -> nx.DiGraph:
-        """Build or retrieve the dependency DAG for a project.
-        
+    def build_dag(self, project_id: str) -> nx.DiGraph:
+        """Build the dependency DAG for a project from the stored tasks.
+
+        The graph is rebuilt on every call. Tasks are also written directly
+        through ``storage`` by other modules, so a cached graph could not be
+        kept in step with them.
+
         Args:
             project_id: Project ID to build DAG for.
-            force: If True, rebuild even if cached.
-            
+
         Returns:
             NetworkX DiGraph with tasks as nodes and dependencies as edges.
         """
-        if not force and self._dag is not None and self._dag_project_id == project_id:
-            return self._dag
-        
         tasks = self.list_tasks(project_id)
         dag = nx.DiGraph()
         
@@ -976,9 +972,6 @@ class ProjectManager:
             raise DependencyError(
                 f"Dependency cycle detected in project {project_id}: {cycles[:3]}"
             )
-        
-        self._dag = dag
-        self._dag_project_id = project_id
         
         logger.debug(f"Built DAG for project {project_id}: {len(tasks)} tasks, {dag.number_of_edges()} edges")
         return dag
@@ -1202,11 +1195,6 @@ class ProjectManager:
         self._tie_breakers = tie_breakers
         logger.info(f"Set tie-breakers: {tie_breakers}")
     
-    def invalidate_dag(self) -> None:
-        """Invalidate the cached DAG, forcing rebuild on next access."""
-        self._dag = None
-        self._dag_project_id = None
-    
     # ==================== Blueprint Integration ====================
     
     def sync_blueprint(
@@ -1335,10 +1323,7 @@ class ProjectManager:
                 task.dependency_specs = resolved_specs
                 task.updated_at = datetime.utcnow().isoformat()
                 self.storage.update_task(task)
-        
-        # Invalidate DAG cache
-        self.invalidate_dag()
-        
+
         result = {
             "project_id": project_id,
             "blueprint_title": blueprint.title,

@@ -22,7 +22,6 @@ from penguin.config import (
 from .git_integration import GitIntegration
 from .manager import ProjectManager
 from .models import Task, TaskStatus
-from .resilience import resilient_operation, RetryStrategy, CircuitBreaker, safe_operation
 
 logger = logging.getLogger(__name__)
 

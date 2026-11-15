@@ -227,15 +227,19 @@ class ConnectionPoolManager:
             raise
 
     async def close_all(self) -> None:
-        """Close all pooled clients. Call during shutdown."""
-        for base_url, client in list(self._clients.items()):
+        """Close all pooled clients. Call during shutdown.
+
+        The clients leave the pool before any is closed, so ``get_client``
+        never returns a closing client, and a client created while this runs
+        stays in the pool for the next ``close_all``.
+        """
+        clients, self._clients = self._clients, {}
+        for base_url, client in clients.items():
             try:
                 await client.aclose()
                 logger.info(f"Closed connection pool for {base_url}")
             except Exception as e:
                 logger.warning(f"Error closing client for {base_url}: {e}")
-        self._clients.clear()
-        self._client_locks.clear()
 
     def get_stats(self) -> Dict[str, Dict]:
         """Get connection pool statistics for monitoring.

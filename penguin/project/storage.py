@@ -500,6 +500,8 @@ class ProjectStorage:
                     result_json = excluded.result_json,
                     error = excluded.error,
                     metadata_json = excluded.metadata_json
+                WHERE runtime_jobs.status NOT IN ('completed', 'failed', 'cancelled')
+                    OR excluded.status = runtime_jobs.status
             """, (
                 record.job_id,
                 record.kind,

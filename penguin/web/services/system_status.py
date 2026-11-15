@@ -18,7 +18,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _LAST_BRANCH_KEYS: dict[str, str] = {}
-_VCS_EMIT_TASK: asyncio.Task | None = None
+# asyncio holds tasks weakly; keep each pending emit until it finishes.
+_VCS_EMIT_TASKS: set[asyncio.Task] = set()
 _VCS_WATCH_TASK: asyncio.Task | None = None
 
 
@@ -243,8 +244,7 @@ def _emit_vcs_update(
         _LAST_BRANCH_KEYS[scope] = branch_key
         try:
             loop = asyncio.get_running_loop()
-            global _VCS_EMIT_TASK
-            _VCS_EMIT_TASK = loop.create_task(
+            task = loop.create_task(
                 core.event_bus.emit(
                     "opencode_event",
                     wrap_opencode_event(
@@ -260,6 +260,8 @@ def _emit_vcs_update(
                     ),
                 )
             )
+            _VCS_EMIT_TASKS.add(task)
+            task.add_done_callback(_VCS_EMIT_TASKS.discard)
         except Exception:
             logger.debug("Unable to emit vcs.branch.updated", exc_info=True)
 
