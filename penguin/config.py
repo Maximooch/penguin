@@ -527,11 +527,9 @@ class RuntimeConfig:
         
         logger.info(f"RuntimeConfig: Project root changed from {old_root} to {self._project_root}")
         
-        # Update environment variable for path_utils security checks
-        try:
-            os.environ['PENGUIN_CWD'] = self._project_root
-        except Exception:
-            pass
+        # path_utils security checks read the active root, which is the
+        # workspace in workspace mode.
+        os.environ['PENGUIN_CWD'] = self.active_root
         
         # Notify observers
         self._notify_observers('project_root', self._project_root)
@@ -564,6 +562,7 @@ class RuntimeConfig:
         self._workspace_root = str(resolved)
         
         logger.info(f"RuntimeConfig: Workspace root changed from {old_root} to {self._workspace_root}")
+        os.environ['PENGUIN_CWD'] = self.active_root
         
         # Notify observers
         self._notify_observers('workspace_root', self._workspace_root)

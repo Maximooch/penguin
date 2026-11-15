@@ -4147,35 +4147,28 @@ class ToolManager:
         mode_l = (mode or "").lower()
         if mode_l not in ("project", "workspace"):
             return f"Invalid root mode '{mode}'. Use 'project' or 'workspace'."
-        self.file_root_mode = mode_l
-        self._file_root = (
-            self.project_root if mode_l == "project" else self.workspace_root
-        )
+        self._use_file_root(mode_l)
         logger.info(
             "ToolManager execution root set to %s (@ %s)",
             self.file_root_mode,
             self._file_root,
         )
-        # Update process-wide default write root so support.create_file/create_folder honor policy
-        try:
-            os.environ["PENGUIN_WRITE_ROOT"] = mode_l
-            os.environ["PENGUIN_CWD"] = self._file_root
-        except Exception:
-            pass
-        # Update notebook executor directory if loaded
-        if self._lazy_initialized.get("notebook_executor") and self._notebook_executor:
-            try:
-                self._notebook_executor.active_directory = self._file_root
-            except Exception:
-                pass
-        # Refresh file map to reflect new root
-        try:
-            self._file_map = FileMap(self._file_root)
-            self._lazy_initialized["file_map"] = True
-        except Exception:
-            # Defer until first access
-            self._lazy_initialized["file_map"] = False
         return f"Execution root set to {mode_l}: {self._file_root}"
+
+    def _use_file_root(self, mode: str) -> None:
+        """Make ``mode``'s root the active file root everywhere tools read it.
+
+        Sets the file root, the process-wide write-root and cwd variables used
+        by file helpers and path checks, the notebook executor's directory and
+        the file map, so none of them is left on an old root.
+        """
+        self.file_root_mode = mode
+        self._file_root = self.project_root if mode == "project" else self.workspace_root
+        os.environ["PENGUIN_WRITE_ROOT"] = mode
+        os.environ["PENGUIN_CWD"] = self._file_root
+        if self._lazy_initialized.get("notebook_executor") and self._notebook_executor:
+            self._notebook_executor.active_directory = self._file_root
+        self._refresh_file_map()
 
     def on_runtime_config_change(self, config_key: str, new_value: Any) -> None:
         """Callback for RuntimeConfig changes (observer pattern).
@@ -4190,51 +4183,18 @@ class ToolManager:
         logger.info(f"ToolManager received config change: {config_key}={new_value}")
 
         if config_key == "project_root":
-            # Update project root and refresh file map if in project mode
             self.project_root = str(new_value)
-            if self.file_root_mode == "project":
-                self._file_root = self.project_root
-                self._refresh_file_map()
-                logger.info(
-                    f"ToolManager: Updated file_root to {self._file_root} (project mode)"
-                )
-
+            self._use_file_root(self.file_root_mode)
         elif config_key == "workspace_root":
-            # Update workspace root and refresh file map if in workspace mode
             self.workspace_root = str(new_value)
-            if self.file_root_mode == "workspace":
-                self._file_root = self.workspace_root
-                self._refresh_file_map()
-                logger.info(
-                    f"ToolManager: Updated file_root to {self._file_root} (workspace mode)"
-                )
-
+            self._use_file_root(self.file_root_mode)
         elif config_key == "execution_mode":
-            # Switch execution mode
             mode_lower = str(new_value).lower()
             if mode_lower in ("project", "workspace"):
-                self.file_root_mode = mode_lower
-                self._file_root = (
-                    self.project_root
-                    if mode_lower == "project"
-                    else self.workspace_root
-                )
-                self._refresh_file_map()
-                logger.info(
-                    f"ToolManager: Switched to {mode_lower} mode, file_root={self._file_root}"
-                )
-
-                # Update notebook executor directory if loaded
-                if (
-                    self._lazy_initialized.get("notebook_executor")
-                    and self._notebook_executor
-                ):
-                    try:
-                        self._notebook_executor.active_directory = self._file_root
-                    except Exception as e:
-                        logger.warning(
-                            f"Could not update notebook executor directory: {e}"
-                        )
+                self._use_file_root(mode_lower)
+        logger.info(
+            "ToolManager: file_root=%s (%s mode)", self._file_root, self.file_root_mode
+        )
 
     def _refresh_file_map(self) -> None:
         """Refresh the file map to reflect new root directory."""
