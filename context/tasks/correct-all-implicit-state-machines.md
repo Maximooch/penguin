@@ -681,7 +681,61 @@ Check for callers first. If there are none, delete.
   - State: (partial, 2026-11-15) fixed: `QuestionManager` keeps at most 1000 resolved questions (`MAX_RESOLVED_QUESTIONS`), dropping the oldest, like approval history (SM-04); before, every answered or rejected question stayed for the life of the process. Checked and left: `ProcessWaitGuard` progress is cleared at the start of every run (`LoopState.reset`). Left: `SkillManager` keeps one small set of activated skill names per session ever seen; it has no session-end hook to prune from.
 - [x] **SM-75 Small singletons and slots**: `CircuitBreaker` string state (`penguin/project/resilience.py:97`), `RuntimeJobRecord.status` upsert (`penguin/project/storage.py:488`), `PenguinState._previous_state` (`penguin/system/state.py:471`), DAG cache invalidation (`penguin/project/manager.py:1340`), MessageBus drop (`penguin/system/message_bus.py:92`), VCS watcher slot (`penguin/web/services/system_status.py:20`), title refresh tasks (`penguin/web/routes.py:963`), `events_ws` (`penguin/web/routes.py:2367`), connection pool `close_all` (`penguin/llm/api_client.py:164`), core/app singletons (`penguin/web/app.py:36,212`).
   - State: (2026-11-15) fixed: a runtime job upsert no longer changes a terminal status (`completed`, `failed`, `cancelled`) unless the new status is the same, so a late cancel request cannot reopen a finished job; `PenguinState` keeps one previous state per system, so resuming one system no longer restores another system's state; the task DAG is rebuilt on every call instead of cached until a blueprint sync (other modules write tasks straight to storage, so no cache could stay in step); pending `vcs.branch.updated` emits are kept in a set until done (the single slot let the garbage collector destroy a pending emit when two scopes changed together); `events_ws` reads the socket, so a client that leaves ends the handler and unsubscribes it from both event buses (before, each one stayed subscribed until shutdown); `ConnectionPoolManager.close_all` takes the clients out of the pool before closing them, so `get_client` never returns a closing client and a client made meanwhile is not dropped unclosed. Deleted: `penguin/project/resilience.py` (`CircuitBreaker`), unused. Checked and left: `MessageBus.send` already returns `False` and logs when no handler takes a message; title refresh tasks are deduped per session and hold strong references (a cancelled one logs noise from its done callback); the app core is one lazily made instance per process.
-- [ ] **SM-76 Second sweep** of the directories listed as not opened, and of any file touched since `36e32f623`.
+- [x] **SM-76 Second sweep** of the directories listed as not opened, and of any file touched since `36e32f623`.
+  - State: (2026-11-15) done: three read-only readers covered the never-opened modules, `penguin/integrations/acp/`, and the rest of the code `main` changed after `36e32f623`. Their 32 findings are SM-77 to SM-108 under "Second sweep (SM-76)"; three side notes are under "Seen in passing". Reported clean: `multi/admission.py`, `multi/routing.py`, `security/tool_capabilities.py`, `security/scoped_paths.py`.
+
+## Second sweep (SM-76), 2026-11-15
+
+Three read-only readers covered the directories the first sweep never opened,
+`penguin/integrations/acp/`, and the rest of the code `main` changed after
+`36e32f623`. Line numbers are from `3988ba33c`. Every entry is a reader's
+claim from code until step 2 of the loop reproduces it; **[confirmed]** marks
+the ones re-read against the code. SM-79 was found by two readers
+independently.
+
+### Tier 0
+
+- [ ] **SM-77 Runtime security mode never reaches enforcement** (a) [security]: `penguin/config.py:605-650` notifies observers, but `ToolManager.on_runtime_config_change` (`penguin/tools/tool_manager.py:4277-4301`) handles only roots and execution mode; the enforcer's mode is fixed at first use (`:2404-2443`) and `_permission_enabled` comes only from `PENGUIN_YOLO` (`:356-358`). `PATCH /api/v1/security/config {"mode":"read_only"}` reports success while writes stay allowed; `/security/yolo` reports checks off while they stay on. Correction: rebuild the enforcer and permission flag from RuntimeConfig on change.
+- [ ] **SM-78 Runtime event ids reused after a restart** (c) [confirmed]: `penguin/system/runtime_events.py:56-57,169-175,620-626` count each stream from 1 per process; the ledger (`penguin/system/runtime_event_ledger.py:238`, `INSERT OR IGNORE` on `event_id`) outlives the process and resolves replay cursors by id (`:335-341`). After a restart, new events with old ids are dropped from the ledger and a reconnect replays the previous run's events. The docs promise a stable replay id and a monotonic per-stream sequence. Correction: start each stream's counter after the ledger's highest sequence for it.
+- [ ] **SM-79 Steering messages stranded when the recipient's session changes** (c): `penguin/multi/mailbox.py:21-58` keys the queue by `(agent, session)` at send time (`penguin/engine.py:1063-1072`); a continuation session (`penguin/system/conversation.py:233-247`) or a session switch gives the agent a new id, so `deliver`/`has_pending` never see the message while `send_message` reported it delivered and `status()` counts it forever. Correction: key pending messages by agent.
+- [ ] **SM-80 Session eviction drops a session whose save failed** (b): `penguin/system/session_manager.py:425-435` deletes the oldest cached session whatever `save_session` returned (`:596-600` re-marks it dirty first). Correction: do not evict a session that failed to save.
+
+### Tier 1
+
+- [ ] **SM-81 Runtime event ledger flush protocol** (c): `penguin/web/sse_events.py:432-491`. A failing flush requeues the whole batch with no bound, and past 256 events every new event re-flushes inline inside `EventBus.emit`; concurrent flushes (per-connection cadence, recorder, replay pre-flush, shutdown) take disjoint batches with no lock, so rowid order (`penguin/system/runtime_event_ledger.py:343-360`) can differ from emit order and a replay can miss events held by an in-flight flush. Also `event_handler` (`:249`) is sync, so it runs on a thread pool and calls `asyncio.Queue.put_nowait` off the loop. Correction: one flush lock per core held across take, write and requeue; a bounded requeue; no inline re-flush while one is failing.
+- [ ] **SM-82 Ollama streaming and finish reason** (b): `penguin/llm/adapters/ollama.py:72-93` calls the adapted stream callback with one argument (`penguin/utils/callbacks.py:56` needs two), so streaming fails on the first token; `done_reason` is ignored, so a reply cut by `num_predict` reports as complete. Correction: pass `(text, "assistant")`, keep `done_reason`, expose the last finish reason.
+- [ ] **SM-83 Two agent executors in a normal runtime** (c): `penguin/tools/tool_manager.py:6583-6594` uses its own `AgentExecutor` unless isolated, while ActionXML spawn, stop and delegate (`penguin/utils/parser.py:2454-2457,2820,3129-3132`) use the global one, and wait/status/shutdown read ToolManager's. An ActionXML background agent cannot be waited on, stopped or shut down. Correction: one executor per core.
+- [ ] **SM-84 A steering message in the last iteration drops the finish signal** (b): `penguin/engine.py:1888-1894` continues on a pending message before the termination check, so with `max_iterations=N` a `finish_task` in iteration N becomes `iterations_exceeded`. Correction: only continue when another iteration is allowed.
+- [ ] **SM-85 Backup-load success becomes a recovery session** (b): `penguin/system/session_manager.py:393-416` caches the restored session, then a failing primary rewrite is caught as a backup-load failure and a new recovery session is returned; the next load of the same id returns the cached one. Correction: give the rewrite its own error handling.
+- [ ] **SM-86 ACP close has no closing state** (c): `penguin/integrations/acp/server.py:585-604` awaits four steps before popping the session; a `session/load` or prompt arriving in between installs or runs a session that the close then removes or closes under it. Correction: mark closing (or pop first) before the first await.
+- [ ] **SM-87 ACP load does not re-check busy under the gate** (c): `penguin/integrations/acp/server.py:685-757` checks `task is None` before taking `_process_gate`, then replaces the `Session` object; a prompt queued meanwhile runs on the replaced object (events dropped, cancel ineffective). Correction: re-check under the gate, as `_idle_session` does.
+- [ ] **SM-88 ACP process completions for closed sessions are ignored** (c): `penguin/integrations/acp/processes.py:81-85` returns before recording completion when the root is not open, so `unresolved` never clears (`penguin/integrations/acp/isolated.py:184-190`, `server.py:623-629`): isolated runtimes stay pinned (16 reach the limit) and delete keeps refusing. Correction: record the completion, skip only the update.
+- [ ] **SM-89 ACP `cancelled` outlives its turn** (b): `penguin/integrations/acp/server.py:874,1024,1057` reset it only when the next prompt starts, so background approvals and questions after a cancelled turn are silently denied. Correction: clear it when the turn ends.
+- [ ] **SM-90 Windows stop cannot kill descendants after the shell exits** (b) [inferred]: `penguin/tools/process_runtime.py:548` tree-kills on Windows only while `poll() is None`; POSIX still kills the group (`:580-592`). Correction: tree-kill the retained pid on Windows too. Needs a Windows run to confirm.
+- [ ] **SM-91 FAISS deletes and updates leave orphan vectors** (c): `penguin/memory/providers/faiss_provider.py:229-261` removes metadata only or appends a new vector; search drops orphan hits (`:169-182`), and the SM-61 re-index makes one orphan per edit, so a memory that exists stops being found. Correction: an id-mapped index with removal.
+- [ ] **SM-92 SQLite FTS5 external-content triggers drift** (c) [inferred]: `penguin/memory/providers/sqlite_provider.py:101-133` inserts without `rowid` and deletes with a plain `DELETE`, which FTS5 external-content tables do not support. Correction: the documented `'delete'` command form, then a rebuild.
+
+### Tier 2
+
+- [ ] **SM-93 Memory provider readiness** (b): `penguin/web/routes.py:7708-7825`, `penguin/tools/tool_manager.py:2678-2721`, `penguin/memory/providers/sqlite_provider.py:76-156`; three paths create or initialise the provider and test different fields, so a failed initialise leaves a connection that accepts writes without FTS, and some routes 500 until a search has run.
+- [ ] **SM-94 `LEDGER_MAX_EVENTS=0` empties the ledger** (a): `penguin/system/runtime_event_ledger.py:89-92,473-475`; the other three ledger settings treat 0 as "no limit".
+- [ ] **SM-95 Cross-process session index merge** (c): `penguin/system/session_manager.py:193-221` merges with a process-local lock and never rewrites entries it did not change, so two processes can lose an index entry until restart.
+- [ ] **SM-96 Audit logger replaced by each isolated runtime** (c): `penguin/tools/tool_manager.py:2452-2476` rebinds the module-global logger in `penguin/security/audit.py:412-450`.
+- [ ] **SM-97 Request-scoped providers outlive the request** (b): `penguin/tools/providers/client.py:11-21` and `mcp.py:26-38` are context variables that background agents inherit (`penguin/multi/executor.py:179`) after the ACP session that set them closed.
+- [ ] **SM-98 ACP permission dialog for a resolved request** (c): `penguin/integrations/acp/server.py:1086-1106` shows the dialog if the request exists, even when it was already denied.
+- [ ] **SM-99 ACP response tracking mixes request id spaces** (c): `penguin/integrations/acp/stdio.py:81-118` removes a pending `session/new` entry when the agent's own request reuses the id, so the new session never gets its commands.
+- [ ] **SM-100 ACP load writes synthesized failures before validation** (b): `penguin/integrations/acp/sessions.py:200-215` records them even when the load is then rejected.
+- [ ] **SM-101 ACP load half-applied when replay fails** (b): `penguin/integrations/acp/server.py:743-786` installs the session and provider before a replay that can raise.
+- [ ] **SM-102 ACP restore never resolves child-scoped records** (b): `penguin/integrations/acp/processes.py:144-165`, `sessions.py:189-199`.
+- [ ] **SM-103 ACP per-session maps never pruned** (b): `ChildTracker.children` and `replay_parents`, approval locks and task sets, `QuestionBridge.tasks`, `ProcessTracker.states`.
+- [ ] **SM-104 ACP delete closes before a delete that can fail** (b): `penguin/integrations/acp/server.py:636-649`.
+
+### Tier 3
+
+- [ ] **SM-105 Modal credential precheck order** (a): `penguin/core_runtime/model_runtime.py:37-49` accepts a generic `api_key` before the Modal check the adapter needs.
+- [ ] **SM-106 `SessionManager._revisions` never pruned** (b): `penguin/system/session_manager.py:88,906-907`.
+- [ ] **SM-107 ACP exact-grant policy and mode fields are constant** (a) [security]: `penguin/integrations/acp/grants.py:34-47`; no approval request carries those fields (`penguin/tools/tool_manager.py:2614-2623`).
+- [ ] **SM-108 Dead modules** (b): `penguin/cognition/`, `penguin/server/ws_server.py` (imports a missing `new_core`), `penguin/memory/providers/milvus_provider.py` (imports a missing module); none has an importer. `penguin/dashboard/` is a standalone Streamlit tool whose ledger path ignores `PENGUIN_RUNTIME_EVENT_LEDGER_PATH`.
 
 ## Changes on main since the sweep
 
@@ -714,6 +768,13 @@ Not verified. Fold into SM-03 when it is worked.
   `penguin/utils/test_*.py`, `penguin/local_task/test_manager.py`.
 - Two `CommandRegistry` classes: `penguin/cli/commands.py:63` and
   `penguin/cli/command_registry.py:81`.
+- `penguin/security/mcp_isolation.py:28` accepts `http://127.0.0.1:1@other.host/`
+  as local (prefix check, not a parsed hostname). The value is set by the
+  harness through an environment variable. Unconfirmed.
+- `penguin/llm/adapters/modal.py:35-50` and `runinfra.py:44-60` copy
+  `OpenRouterGateway`'s per-request fields by hand (next to SM-35).
+- A failed background indexing task leaves `_indexing_task` set, so indexing
+  never retries (`penguin/tools/tool_manager.py:2704-2717`, next to SM-60).
 
 ## Log
 
@@ -942,3 +1003,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-74: partly fixed (2026-11-15). `pytest -q tests/test_question_history_bound.py`: 1 passed, red before the fix; question-manager test files: 29 passed.
 - SM-75: fixed (2026-11-15). Six new tests, each red before its fix: `tests/test_runtime_job_terminal_status.py`, `tests/system/test_penguin_state_resume.py`, `tests/test_project_dag_freshness.py`, `tests/api/test_vcs_emit_tasks_kept.py`, `tests/web/test_events_ws_disconnect.py`, `tests/llm/test_connection_pool_close_race.py`. Related test files: 41 files, all passed (marker-deselected files excluded).
 - SM-55 Bend lane (2026-11-15). `bend prototypes/bend_context_trim/PROOF.bend`: all 5 laws check by evaluation over 338 sessions. `PENGUIN_TEST_BEND=1 pytest -q tests/integrations/test_bend_context_trim.py`: 2 passed; the table test fails on the pre-SM-55 `context_window.py`, and a model with the pre-SM-55 rule fails `trimmed_session_fits_unless_at_minimums`.
+- SM-76: done (2026-11-15). Second sweep by three read-only readers; 32 new items, SM-77 to SM-108. Nothing executed.
