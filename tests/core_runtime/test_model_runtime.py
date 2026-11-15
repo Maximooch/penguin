@@ -412,19 +412,26 @@ def test_apply_new_model_config_propagates_budget_and_model_config() -> None:
     engine = SimpleNamespace()
     owner = SimpleNamespace(
         model_config=old_config,
+        system_prompt="system",
         conversation_manager=conversation_manager,
         engine=engine,
     )
-    refresh_calls: list[str] = []
+    built: list[str] = []
+
+    def client_factory(*, model_config: ModelConfig) -> SimpleNamespace:
+        built.append(model_config.model)
+        return SimpleNamespace(set_system_prompt=lambda _prompt: None)
 
     apply_new_model_config(
         owner,
         new_config,
         context_window_tokens=85,
-        refresh_active_client=lambda: refresh_calls.append(owner.model_config.model),
+        api_client_factory=client_factory,
     )
 
-    assert refresh_calls == ["new"]
+    assert built == ["new"]
+    assert engine.api_client is owner.api_client
+    assert context_window.api_client is owner.api_client
     assert owner.model_config is new_config
     assert conversation_manager.model_config is new_config
     assert context_window.model_config is new_config

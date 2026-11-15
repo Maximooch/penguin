@@ -60,7 +60,7 @@ class ModelCoreFacade:
             self,
             new_model_config,
             context_window_tokens=context_window_tokens,
-            refresh_active_client=self.refresh_api_client,
+            api_client_factory=APIClient,
             log=logger,
         )
 

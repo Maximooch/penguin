@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 FetchModelSpecs = Callable[[str], Awaitable[dict[str, Any]]]
 ResolveModelProvider = Callable[[str], tuple[Optional[str], str]]
 ApiClientFactory = Callable[..., Any]
-RefreshActiveClient = Callable[[], None]
 LLMClientFactory = Callable[[ModelConfig, Any], Any]
 LLMClientConfigFactory = Callable[..., Any]
 LinkConfigFactory = Callable[..., Any]
@@ -110,34 +109,36 @@ def refresh_api_client(
     api_client_factory: ApiClientFactory,
     log: logging.Logger | None = None,
 ) -> None:
-    """Recreate and propagate the active API client for a core-like owner."""
+    """Recreate the active API client for the owner's current model config."""
 
-    active_logger = log or logger
-    owner.api_client = api_client_factory(model_config=owner.model_config)
-    owner.api_client.set_system_prompt(owner.system_prompt)
+    del log
+    api_client = _build_api_client(owner, owner.model_config, api_client_factory)
+    _use_api_client(owner, api_client)
 
+
+def _build_api_client(
+    owner: Any, model_config: ModelConfig, api_client_factory: ApiClientFactory
+) -> Any:
+    """Build and prepare a client without installing it anywhere."""
+
+    api_client = api_client_factory(model_config=model_config)
+    api_client.set_system_prompt(owner.system_prompt)
+    return api_client
+
+
+def _use_api_client(owner: Any, api_client: Any) -> None:
+    """Point the owner and every component that calls the model at ``api_client``."""
+
+    owner.api_client = api_client
     conversation_manager = getattr(owner, "conversation_manager", None)
     if conversation_manager:
-        conversation_manager.api_client = owner.api_client
-        try:
-            if hasattr(conversation_manager, "context_window"):
-                context_window = conversation_manager.context_window
-                context_window.api_client = owner.api_client
-        except Exception as exc:
-            active_logger.warning(
-                "Failed to propagate refreshed API client to ContextWindowManager: %s",
-                exc,
-            )
-
+        conversation_manager.api_client = api_client
+        context_window = getattr(conversation_manager, "context_window", None)
+        if context_window is not None:
+            context_window.api_client = api_client
     engine = getattr(owner, "engine", None)
     if engine is not None:
-        try:
-            engine.api_client = owner.api_client
-        except Exception as exc:
-            active_logger.warning(
-                "Failed to propagate refreshed API client to Engine: %s",
-                exc,
-            )
+        engine.api_client = api_client
 
 
 def ensure_litellm_configured(
@@ -252,48 +253,39 @@ def apply_new_model_config(
     new_model_config: ModelConfig,
     *,
     context_window_tokens: int | None = None,
-    refresh_active_client: RefreshActiveClient | None = None,
+    api_client_factory: ApiClientFactory,
     log: logging.Logger | None = None,
 ) -> None:
-    """Apply a new model config and propagate dependent runtime state."""
+    """Switch the owner to a new model config, all or nothing.
+
+    The new API client is built first. If that fails, the error propagates and
+    nothing has changed; after it succeeds, every component is switched
+    together.
+    """
 
     active_logger = log or logger
+    api_client = _build_api_client(owner, new_model_config, api_client_factory)
+
     owner.model_config = new_model_config
-
-    if refresh_active_client is not None:
-        refresh_active_client()
-
+    _use_api_client(owner, api_client)
     conversation_manager = getattr(owner, "conversation_manager", None)
     if conversation_manager:
         conversation_manager.model_config = new_model_config
-        try:
-            if hasattr(conversation_manager, "context_window"):
-                context_window = conversation_manager.context_window
-                context_window.model_config = new_model_config
-                if context_window_tokens:
-                    old_budget = context_window.max_context_window_tokens
-                    context_window.max_context_window_tokens = context_window_tokens
-                    context_window._initialize_token_budgets()
-                    active_logger.info(
-                        "Updated context window: %s -> %s tokens",
-                        old_budget,
-                        context_window_tokens,
-                    )
-        except Exception as exc:
-            active_logger.warning(
-                "Failed to propagate new model config to ContextWindowManager: %s",
-                exc,
-            )
-
+        context_window = getattr(conversation_manager, "context_window", None)
+        if context_window is not None:
+            context_window.model_config = new_model_config
+            if context_window_tokens:
+                old_budget = context_window.max_context_window_tokens
+                context_window.max_context_window_tokens = context_window_tokens
+                context_window._initialize_token_budgets()
+                active_logger.info(
+                    "Updated context window: %s -> %s tokens",
+                    old_budget,
+                    context_window_tokens,
+                )
     engine = getattr(owner, "engine", None)
     if engine is not None:
-        try:
-            engine.model_config = new_model_config
-        except Exception as exc:
-            active_logger.warning(
-                "Failed to propagate new model config to Engine: %s",
-                exc,
-            )
+        engine.model_config = new_model_config
 
 
 async def resolve_request_runtime(
