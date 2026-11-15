@@ -6834,9 +6834,8 @@ async def stream_task(websocket: WebSocket, core: PenguinCore = Depends(get_core
                         f"Error sending event to WebSocket: {e}", exc_info=True
                     )
 
-            # Store callback temporarily so Core._handle_run_mode_event can use it
-            core._temp_ws_callback = send_event_to_websocket
-
+            # RunMode installs this callback for its run and removes it when
+            # the run ends; a second socket cannot take over a running task.
             task_execution = asyncio.create_task(
                 core.start_run_mode(
                     name=name,
@@ -6844,6 +6843,7 @@ async def stream_task(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     continuous=continuous,
                     time_limit=time_limit,
                     context=context,
+                    websocket_event_callback=send_event_to_websocket,
                 )
             )
 
@@ -6866,10 +6866,6 @@ async def stream_task(websocket: WebSocket, core: PenguinCore = Depends(get_core
                             "data": {"message": f"Task execution failed: {task_err}"},
                         }
                     )
-            finally:
-                # Clean up temporary callback
-                if hasattr(core, "_temp_ws_callback"):
-                    delattr(core, "_temp_ws_callback")
 
             # Once the task is done (completed, errored, interrupted), we can break the loop
             # Assuming one task per connection.

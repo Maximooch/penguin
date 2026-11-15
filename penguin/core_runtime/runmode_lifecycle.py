@@ -23,6 +23,8 @@ async def start_run_mode(
     mode_type: str = "task",
     stream_callback_for_cli: Callable[[str], Awaitable[None]] | None = None,
     ui_update_callback_for_cli: Callable[[], Awaitable[None]] | None = None,
+    websocket_event_callback: Callable[[dict[str, Any]], Awaitable[None]]
+    | None = None,
     run_mode_factory: Callable[..., Any],
     log_error: Callable[..., None],
     logger: Any,
@@ -38,6 +40,9 @@ async def start_run_mode(
             "RunMode is already running; stop it or wait for it to finish"
         )
     owner._ui_update_callback = ui_update_callback_for_cli
+    # The run's own event sink; set here, after the busy check, and cleared
+    # by this run's cleanup, so another caller can never take it over.
+    owner._temp_ws_callback = websocket_event_callback
     owner._runmode_stream_callback = owner._prepare_runmode_stream_callback(
         stream_callback_for_cli
     )
@@ -92,6 +97,7 @@ async def start_run_mode(
         owner._runmode_stream_callback = None
         owner.run_mode = None
         owner._ui_update_callback = None
+        owner._temp_ws_callback = None
 
         if run_mode is None:
             owner._continuous_mode = False
