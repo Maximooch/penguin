@@ -172,7 +172,19 @@ class SessionRegistry:
         return records
 
     def history(self, session: Any) -> list[Any]:
-        """Validate stored updates before replay; fail rather than omit records."""
+        """Validate stored updates before replay; fail rather than omit records.
+
+        Tool calls that never reported completion end with a synthesized
+        failure. Nothing is written; see ``replay_history``.
+        """
+        return self.replay_history(session)[0]
+
+    def replay_history(self, session: Any) -> tuple[list[Any], list[Any]]:
+        """Return the replay and, separately, the failures it synthesized.
+
+        The caller records the synthesized failures once the load that uses
+        them has succeeded, so a refused or failed load changes no history.
+        """
         try:
             updates = [
                 item
@@ -197,6 +209,7 @@ class SessionRegistry:
                 pending.discard(update.tool_call_id)
             else:
                 pending.add(update.tool_call_id)
+        synthesized: list[Any] = []
         for call_id in sorted(pending - background):
             failed = ToolCallProgress(
                 session_update="tool_call_update",
@@ -211,6 +224,5 @@ class SessionRegistry:
                     )
                 ],
             )
-            updates.append(failed)
-            self.record(session.id, failed)
-        return updates
+            synthesized.append(failed)
+        return updates + synthesized, synthesized

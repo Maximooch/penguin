@@ -743,7 +743,7 @@ class PenguinACPAgent:
                 raise RequestError.invalid_params(
                     {"reason": "Session workspace does not match"}
                 )
-            history = self._registry.history(saved)
+            history, closures = self._registry.replay_history(saved)
             roots = self._registry.validate_roots(owned_cwd, additional_directories)
             if any(
                 child.active and child.root == session_id
@@ -795,7 +795,7 @@ class PenguinACPAgent:
                 if provider is not None:
                     await asyncio.to_thread(provider.close)
                 raise RequestError.invalid_request({"reason": "Session is busy"})
-            self.sessions[session_id] = Session(
+            installed = Session(
                 cwd=owned_cwd,
                 roots=roots,
                 mcp_provider=provider,
@@ -807,39 +807,54 @@ class PenguinACPAgent:
                 terminal=terminal,
                 shell=shell,
             )
-            if active and active.mcp_provider is not None:
-                await asyncio.to_thread(active.mcp_provider.close)
-            saved.metadata["acp_additional_directories"] = [
-                str(root) for root in roots[1:]
-            ]
-            saved.metadata["execution_allowed_roots"] = [
-                str(root) for root in self._registry.execution_roots(session_id, roots)
-            ]
-            self._registry.save(saved)
-            self._grants.restore(session_id, saved)
-            for update in history:
-                if not isinstance(update, dict):
-                    self._processes.restore(session_id, update)
-            if replay:
+            self.sessions[session_id] = installed
+            try:
+                if active and active.mcp_provider is not None:
+                    await asyncio.to_thread(active.mcp_provider.close)
+                saved.metadata["acp_additional_directories"] = [
+                    str(root) for root in roots[1:]
+                ]
+                saved.metadata["execution_allowed_roots"] = [
+                    str(root)
+                    for root in self._registry.execution_roots(session_id, roots)
+                ]
+                self._registry.save(saved)
+                self._grants.restore(session_id, saved)
                 for update in history:
-                    if isinstance(update, dict):
-                        await self._children.replay(session_id, update)
-                    else:
-                        await self._connection.session_update(
-                            session_id=session_id, update=update
-                        )
-                await self._children.finish_replay(session_id)
-            elif self._children.native:
-                for update in history:
-                    if (
-                        isinstance(update, dict)
-                        and update.get("update", {}).get("sessionUpdate")
-                        == "subagent_update"
-                    ):
-                        await self._children.replay(session_id, update)
-                await self._children.finish_replay(session_id)
-            await self._processes.refresh(session_id)
-            await self._send_commands(session_id)
+                    if not isinstance(update, dict):
+                        self._processes.restore(session_id, update)
+                if replay:
+                    for update in history:
+                        if isinstance(update, dict):
+                            await self._children.replay(session_id, update)
+                        else:
+                            await self._connection.session_update(
+                                session_id=session_id, update=update
+                            )
+                    await self._children.finish_replay(session_id)
+                elif self._children.native:
+                    for update in history:
+                        if (
+                            isinstance(update, dict)
+                            and update.get("update", {}).get("sessionUpdate")
+                            == "subagent_update"
+                        ):
+                            await self._children.replay(session_id, update)
+                    await self._children.finish_replay(session_id)
+                await self._processes.refresh(session_id)
+                await self._send_commands(session_id)
+            except BaseException:
+                # Leave no half-loaded session: it is not open afterwards.
+                if self.sessions.get(session_id) is installed:
+                    self.sessions.pop(session_id)
+                self._children.replay_known.pop(session_id, None)
+                self._grants.close(session_id)
+                if provider is not None:
+                    await asyncio.to_thread(provider.close)
+                raise
+            # The load succeeded: keep the "never completed" outcomes it showed.
+            for update in closures:
+                self._registry.record(session_id, update)
 
     async def list_sessions(
         self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
