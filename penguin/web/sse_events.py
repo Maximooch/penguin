@@ -39,6 +39,13 @@ _LEDGER_RECORDER_ATTR = "_runtime_event_ledger_recorder_v1"
 _LEDGER_BATCH_ATTR = "_runtime_event_ledger_batch_v1"
 _LEDGER_FLUSH_INTERVAL_SECONDS = 0.25
 _LEDGER_BATCH_MAX_EVENTS = 256
+# One flush at a time per core, so rows commit in emission order (replay reads
+# by rowid). After a failed write, routine flushes wait before retrying, and
+# the unsaved backlog is capped; dropped events surface as a replay gap.
+_LEDGER_FLUSH_LOCK_ATTR = "_runtime_event_ledger_flush_lock_v1"
+_LEDGER_RETRY_AT_ATTR = "_runtime_event_ledger_retry_at_v1"
+_LEDGER_RETRY_SECONDS = 5.0
+_LEDGER_PENDING_MAX_EVENTS = 10_000
 # Per-connection delivery limits for the compatibility SSE projection. The
 # durable runtime event ledger owns replay truth; this queue only buffers live
 # delivery for a connected client. Slow-client drops are recoverable by
@@ -246,8 +253,13 @@ async def events_sse(
 
             return True
 
-        def event_handler(event_type: str, data: Any):
-            """Handler for EventBus events."""
+        async def event_handler(event_type: str, data: Any) -> None:
+            """Handler for EventBus events.
+
+            Async so the EventBus runs it on the event loop: a sync handler is
+            run in a worker thread, where touching this connection's
+            ``asyncio.Queue`` and state is not safe.
+            """
             nonlocal lagging
             # Only handle opencode_event type
             if event_type != "opencode_event":
@@ -394,7 +406,7 @@ async def events_sse(
                 # live so reconnect replay stays fresh.
                 now = time.monotonic()
                 if now - last_ledger_flush >= _LEDGER_FLUSH_INTERVAL_SECONDS:
-                    await _flush_ledger_batch(core)
+                    await _flush_ledger_batch(core, wait=False)
                     last_ledger_flush = now
 
         except asyncio.CancelledError:
@@ -429,33 +441,71 @@ async def flush_runtime_event_ledger(core: Any) -> None:
     await _flush_ledger_batch(core)
 
 
-async def _flush_ledger_batch(core: Any) -> None:
+def _ledger_flush_lock(core: Any) -> asyncio.Lock:
+    lock = getattr(core, _LEDGER_FLUSH_LOCK_ATTR, None)
+    if not isinstance(lock, asyncio.Lock):
+        lock = asyncio.Lock()
+        setattr(core, _LEDGER_FLUSH_LOCK_ATTR, lock)
+    return lock
+
+
+def _cap_pending(batch: list[Any]) -> None:
+    """Drop the oldest unsaved events beyond the backlog cap."""
+    overflow = len(batch) - _LEDGER_PENDING_MAX_EVENTS
+    if overflow > 0:
+        del batch[:overflow]
+        logger.warning(
+            "Runtime event ledger backlog full; dropped %d unsaved events "
+            "(replay reports a gap for them)",
+            overflow,
+        )
+
+
+async def _flush_ledger_batch(core: Any, *, wait: bool = True) -> None:
     """Persist the pending opencode-event batch to the runtime ledger.
 
     Runs on the event loop and offloads the SQLite write to a worker thread;
     the whole batch lands in a single transaction (INSERT OR IGNORE keeps
-    retries idempotent). Called from the SSE generator on a short cadence,
-    before replay reads, and when the batch grows large.
-    """
-    batch = getattr(core, _LEDGER_BATCH_ATTR, None)
-    if not batch:
-        return
-    events = list(batch)
-    batch.clear()
-    if not events:
-        return
-    try:
-        from penguin.system.runtime_event_ledger import get_runtime_event_ledger
+    retries idempotent). Flushes run one at a time per core, so events commit
+    in emission order.
 
-        await asyncio.to_thread(get_runtime_event_ledger(core).extend, events)
-    except Exception:
-        # Requeue at the front (identity/order were already assigned at
-        # emission time); the next drain retries the whole batch.
-        batch[:0] = events
-        logger.debug(
-            "Failed to flush runtime event ledger batch",
-            exc_info=True,
-        )
+    Args:
+        core: The core whose batch to flush.
+        wait: True (replay, disconnect, shutdown) waits for a flush in
+            progress and retries even after a recent failure. False (the
+            streaming cadence and a full batch) skips the flush instead.
+    """
+    if not getattr(core, _LEDGER_BATCH_ATTR, None):
+        return
+    lock = _ledger_flush_lock(core)
+    if not wait and (
+        lock.locked()
+        or time.monotonic() < getattr(core, _LEDGER_RETRY_AT_ATTR, 0.0)
+    ):
+        return
+    async with lock:
+        batch = getattr(core, _LEDGER_BATCH_ATTR, None)
+        if not batch:
+            return
+        events = list(batch)
+        batch.clear()
+        try:
+            from penguin.system.runtime_event_ledger import get_runtime_event_ledger
+
+            await asyncio.to_thread(get_runtime_event_ledger(core).extend, events)
+            setattr(core, _LEDGER_RETRY_AT_ATTR, 0.0)
+        except Exception:
+            # Requeue at the front (identity/order were already assigned at
+            # emission time) and wait before the next routine retry.
+            batch[:0] = events
+            _cap_pending(batch)
+            setattr(
+                core, _LEDGER_RETRY_AT_ATTR, time.monotonic() + _LEDGER_RETRY_SECONDS
+            )
+            logger.debug(
+                "Failed to flush runtime event ledger batch",
+                exc_info=True,
+            )
 
 
 def _install_runtime_event_ledger_recorder(core: Any) -> None:
@@ -487,8 +537,9 @@ def _install_runtime_event_ledger_recorder(core: Any) -> None:
                 batch = []
                 setattr(core, _LEDGER_BATCH_ATTR, batch)
             batch.append(runtime_event)
+            _cap_pending(batch)
             if len(batch) >= _LEDGER_BATCH_MAX_EVENTS:
-                await _flush_ledger_batch(core)
+                await _flush_ledger_batch(core, wait=False)
         except Exception:
             # Ledger failures must not interrupt live TUI streaming. The client
             # can still receive the live frame; replay will surface a gap if
