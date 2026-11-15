@@ -221,6 +221,11 @@ on its own.
   held back since that tag is now shown instead of dropped. A truncated
   tool call can therefore show its partial syntax, which the engine also
   repairs (SM-15).
+- SM-48: the launcher now counts a server as Penguin only when
+  `/api/v1/health` answers 200 with Penguin's health payload (it has
+  `agent_capacity`). Another service on the port is no longer reused; the
+  launcher then tries to start its own server, which fails on the occupied
+  port with an error.
 - SM-40: when the session gate cannot be taken before the run deadline, the
   goal run now fails with a conflict before any claim is recorded. Before,
   it recorded the claim and then recorded a `timeout` result.
@@ -583,7 +588,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - State: (done, 2026-11-15) one reset, `StreamingManager.reset_stream_state`, now forgets a stream (id, streaming flag, both buffers) and replaces the copies in `finalize_streaming`, the event manager's final-chunk path and the chat loop's per-turn reset. `safely_stop_progress` calls it when it stops a live streaming display, so stopping the display no longer leaves the stream id set; and the event manager now stops old displays before it records the new stream's id. Before, the next stream in the same turn was ignored as a foreign stream. Left as is: `cli.py` still carries its own unused `_active_stream_id` and `_streaming_session_id` fields, which `_finalize_streaming` clears.
 - [x] **SM-47 CLI event bus delivery and dedup** (c): `penguin/cli/events.py:107-234`; events without `content` share a dedup key; sync handlers mutate display state from a worker thread.
   - State: events without `content` are deduplicated on their whole payload. Still open: sync handlers run on a worker thread and mutate display state unlocked; `PenguinCLI` never unsubscribes.
-- [ ] **SM-48 Launcher web-server ownership** (b): `penguin/cli/opencode_launcher.py:205-276,964-1054`; a foreign server on the port counts as ours; no SIGTERM handler.
+- [x] **SM-48 Launcher web-server ownership** (b): `penguin/cli/opencode_launcher.py:205-276,964-1054`; a foreign server on the port counts as ours; no SIGTERM handler.
+  - State: (done, 2026-11-15) `_is_server_running` requires Penguin's health payload, not just HTTP 200; `_wait_for_server` checks that the launcher's own child is still running before it accepts a healthy answer, so a server that took the port after the child exited is not taken for the launcher's own. `main` installs a SIGTERM handler for the launcher's run that exits normally (status 143), so the web server it started is stopped by the existing `finally` and `atexit` cleanup, and restores the previous handler afterwards.
 - [ ] **SM-49 Provider OAuth pending flow** (c): `penguin/web/services/provider_auth.py:40-512,1023-1227`; one slot per provider, popped by provider and not by state; four TODOs already name the gaps.
 - [ ] **SM-50 OpenAI OAuth resolve and refresh** (b): `penguin/llm/adapters/openai.py:1019-1145`; resolve and peek duplicate env parsing; refresh writes process-wide state unlocked.
 - [ ] **SM-51 ACP session turn** (stale 2026-11-13: `cancel` on main now captures `session.task` before awaiting, so the `None.cancel()` path is gone) (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
@@ -861,3 +867,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-41: fixed (2026-11-15). `pytest -q tests/test_core_runmode_cleanup.py`: 3 passed; the new re-entrancy test hung before the fix (the second start took over the first run). Every RunMode test file: 33 files, 375 passed apart from the two known `test_cli_surface_audit_regressions.py` baseline failures.
 - SM-44: fixed (2026-11-15). `pytest -q tests/test_part_event_action_tags.py`: 3 passed, 2 red before the fix (the third guards that a closed action split across chunks stays hidden); every part-event and streaming test file: 34 files, 506 passed.
 - SM-46: fixed (2026-11-15). `pytest -q tests/test_cli_stream_state.py`: 2 passed, both red before the fix; CLI test files: 27 files, 169 passed apart from the two known `test_cli_surface_audit_regressions.py` baseline failures.
+- SM-48: fixed (2026-11-15). `pytest -q tests/test_opencode_launcher_ownership.py`: 4 passed, 3 red before the fix (the fourth guards that a Penguin server is still recognised); launcher and CLI test files: 28 files, 173 passed apart from the two known `test_cli_surface_audit_regressions.py` baseline failures.
