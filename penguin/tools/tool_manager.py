@@ -348,8 +348,10 @@ class ToolManager:
             # In-process Python cannot be stopped, so it keeps the lock.
             self._abandoned_code_thread: Optional[threading.Thread] = None
 
-            # Permission enforcer (lazy initialized)
+            # Permission enforcer (lazy initialized; rebuilt after a runtime
+            # security or root change, see on_runtime_config_change)
             self._permission_enforcer = None
+            self._security_mode: str | None = None
             self._process_runtime = None
             self._process_tools = None
             self._process_runtime_lock = threading.RLock()
@@ -2417,7 +2419,10 @@ class ToolManager:
                         security_policy = security_policy.to_dict()
                     if not isinstance(security_policy, dict):
                         raise ValueError("security must be a configuration object")
-                    mode = _PermissionMode(security_policy.get("mode", "workspace"))
+                    mode = _PermissionMode(
+                        self._security_mode
+                        or security_policy.get("mode", "workspace")
+                    )
                     yolo = os.environ.get("PENGUIN_YOLO", "").lower() in (
                         "1",
                         "true",
@@ -4296,6 +4301,19 @@ class ToolManager:
             mode_lower = str(new_value).lower()
             if mode_lower in ("project", "workspace"):
                 self._use_file_root(mode_lower)
+        elif config_key == "security_mode":
+            self._security_mode = str(new_value).lower()
+        elif config_key == "security_enabled":
+            self._permission_enabled = bool(new_value)
+        if config_key in (
+            "project_root",
+            "workspace_root",
+            "security_mode",
+            "security_enabled",
+        ):
+            # The enforcer holds the mode and roots it was built with; the next
+            # permission check rebuilds it from the current values.
+            self._permission_enforcer = None
         logger.info(
             "ToolManager: file_root=%s (%s mode)", self._file_root, self.file_root_mode
         )
