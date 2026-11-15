@@ -275,6 +275,9 @@ class ToolManager:
                 self._file_root,
             )
 
+            # Guards first-use construction of lazily loaded tools, which tool
+            # calls on worker threads can reach at the same time.
+            self._lazy_lock = threading.RLock()
             # Track what's been initialized - expanded for all tools
             self._lazy_initialized = {
                 "declarative_memory_tool": False,
@@ -2249,103 +2252,124 @@ class ToolManager:
     def task_tools(self):
         """Lazy load task tools."""
         if not self._lazy_initialized["task_tools"]:
-            self._task_tools = TaskTools()
-            self._lazy_initialized["task_tools"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["task_tools"]:
+                    self._task_tools = TaskTools()
+                    self._lazy_initialized["task_tools"] = True
         return self._task_tools
 
     @property
     def skill_tools(self):
         """Lazy load skill tools."""
         if not self._lazy_initialized["skill_tools"]:
-            with profile_operation("ToolManager.lazy_load_skill_tools"):
-                logger.debug("Lazy-loading skill tools")
-                from penguin.skills.manager import SkillManager
+            with self._lazy_lock:
+                if not self._lazy_initialized["skill_tools"]:
+                    with profile_operation("ToolManager.lazy_load_skill_tools"):
+                        logger.debug("Lazy-loading skill tools")
+                        from penguin.skills.manager import SkillManager
 
-                skill_manager = getattr(self, "skill_manager", None)
-                if skill_manager is None:
-                    skill_manager = SkillManager(
-                        self.config,
-                        project_root=getattr(self, "project_root", None),
-                    )
-                    self.skill_manager = skill_manager
-                conversation_manager = getattr(self._core, "conversation_manager", None)
-                self._skill_tools = SkillTools(
-                    skill_manager,
-                    conversation_manager=conversation_manager,
-                )
-                self._lazy_initialized["skill_tools"] = True
+                        skill_manager = getattr(self, "skill_manager", None)
+                        if skill_manager is None:
+                            skill_manager = SkillManager(
+                                self.config,
+                                project_root=getattr(self, "project_root", None),
+                            )
+                            self.skill_manager = skill_manager
+                        conversation_manager = getattr(
+                            self._core, "conversation_manager", None
+                        )
+                        self._skill_tools = SkillTools(
+                            skill_manager,
+                            conversation_manager=conversation_manager,
+                        )
+                        self._lazy_initialized["skill_tools"] = True
         return self._skill_tools
 
     @property
     def declarative_memory_tool(self):
         if not self._lazy_initialized["declarative_memory_tool"]:
-            with profile_operation("ToolManager.lazy_load_declarative_memory_tool"):
-                logger.debug("Lazy-loading declarative memory tool")
-                self._declarative_memory_tool = DeclarativeMemoryTool()
-                self._lazy_initialized["declarative_memory_tool"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["declarative_memory_tool"]:
+                    with profile_operation(
+                        "ToolManager.lazy_load_declarative_memory_tool"
+                    ):
+                        logger.debug("Lazy-loading declarative memory tool")
+                        self._declarative_memory_tool = DeclarativeMemoryTool()
+                        self._lazy_initialized["declarative_memory_tool"] = True
         return self._declarative_memory_tool
 
     @property
     def grep_search(self):
         if not self._lazy_initialized["grep_search"]:
-            with profile_operation("ToolManager.lazy_load_grep_search"):
-                logger.debug("Lazy-loading grep search")
-                self._grep_search = GrepSearch(
-                    root_dir=os.path.join(WORKSPACE_PATH, "logs")
-                )
-                self._lazy_initialized["grep_search"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["grep_search"]:
+                    with profile_operation("ToolManager.lazy_load_grep_search"):
+                        logger.debug("Lazy-loading grep search")
+                        self._grep_search = GrepSearch(
+                            root_dir=os.path.join(WORKSPACE_PATH, "logs")
+                        )
+                        self._lazy_initialized["grep_search"] = True
         return self._grep_search
 
     @property
     def file_map(self):
         if not self._lazy_initialized["file_map"]:
-            with profile_operation("ToolManager.lazy_load_file_map"):
-                logger.debug("Lazy-loading file map")
-                # Map the active file root (project/workspace)
-                self._file_map = FileMap(self._file_root)
-                self._lazy_initialized["file_map"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["file_map"]:
+                    with profile_operation("ToolManager.lazy_load_file_map"):
+                        logger.debug("Lazy-loading file map")
+                        # Map the active file root (project/workspace)
+                        self._file_map = FileMap(self._file_root)
+                        self._lazy_initialized["file_map"] = True
         return self._file_map
 
     @property
     def summary_notes_tool(self):
         if not self._lazy_initialized["summary_notes_tool"]:
-            with profile_operation("ToolManager.lazy_load_summary_notes_tool"):
-                logger.debug("Lazy-loading summary notes tool")
-                # Use WORKSPACE_PATH for summary notes
-                summary_notes_path = os.path.join(
-                    WORKSPACE_PATH, "notes", "summary_notes.yml"
-                )
-                self._summary_notes_tool = SummaryNotes(summary_notes_path)
-                self._lazy_initialized["summary_notes_tool"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["summary_notes_tool"]:
+                    with profile_operation("ToolManager.lazy_load_summary_notes_tool"):
+                        logger.debug("Lazy-loading summary notes tool")
+                        # Use WORKSPACE_PATH for summary notes
+                        summary_notes_path = os.path.join(
+                            WORKSPACE_PATH, "notes", "summary_notes.yml"
+                        )
+                        self._summary_notes_tool = SummaryNotes(summary_notes_path)
+                        self._lazy_initialized["summary_notes_tool"] = True
         return self._summary_notes_tool
 
     @property
     def notebook_executor(self):
         from penguin.core_runtime.isolation import runtime_isolated
+
         if runtime_isolated():
             raise RuntimeError(
                 "In-process Python is unavailable in isolated runtimes; "
                 "use execute_command with a Python subprocess"
             )
         if not self._lazy_initialized["notebook_executor"]:
-            with profile_operation("ToolManager.lazy_load_notebook_executor"):
-                logger.debug("Lazy-loading notebook executor")
-                self._notebook_executor = NotebookExecutor()
-                # Execute code relative to the selected file root when invoked
-                try:
-                    self._notebook_executor.active_directory = self._file_root
-                except Exception:
-                    pass
-                self._lazy_initialized["notebook_executor"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["notebook_executor"]:
+                    with profile_operation("ToolManager.lazy_load_notebook_executor"):
+                        logger.debug("Lazy-loading notebook executor")
+                        self._notebook_executor = NotebookExecutor()
+                        # Execute code relative to the selected file root when invoked
+                        try:
+                            self._notebook_executor.active_directory = self._file_root
+                        except Exception:
+                            pass
+                        self._lazy_initialized["notebook_executor"] = True
         return self._notebook_executor
 
     @property
     def perplexity_provider(self):
         if not self._lazy_initialized["perplexity_provider"]:
-            with profile_operation("ToolManager.lazy_load_perplexity_provider"):
-                logger.debug("Lazy-loading perplexity provider")
-                self._perplexity_provider = PerplexityProvider()
-                self._lazy_initialized["perplexity_provider"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["perplexity_provider"]:
+                    with profile_operation("ToolManager.lazy_load_perplexity_provider"):
+                        logger.debug("Lazy-loading perplexity provider")
+                        self._perplexity_provider = PerplexityProvider()
+                        self._lazy_initialized["perplexity_provider"] = True
         return self._perplexity_provider
 
     @property
@@ -2395,7 +2419,9 @@ class ToolManager:
                         raise ValueError("security must be a configuration object")
                     mode = _PermissionMode(security_policy.get("mode", "workspace"))
                     yolo = os.environ.get("PENGUIN_YOLO", "").lower() in (
-                        "1", "true", "yes"
+                        "1",
+                        "true",
+                        "yes",
                     )
                     enforcer = _PermissionEnforcer(mode=mode, yolo=yolo, audit_all=True)
 
@@ -2507,8 +2533,11 @@ class ToolManager:
                         enforce_execution_path(Path(resource))
                 except (ValueError, OSError) as exc:
                     return json.dumps(
-                        {"error": "permission_denied", "tool": tool_name,
-                         "reason": str(exc)}
+                        {
+                            "error": "permission_denied",
+                            "tool": tool_name,
+                            "reason": str(exc),
+                        }
                     )
         if not self._permission_enabled:
             return None
@@ -2553,7 +2582,9 @@ class ToolManager:
 
         if is_call_authorized(tool_name, tool_input, context):
             return None
-        operation, resource, resources = approval_identity(tool_name, tool_input, context)
+        operation, resource, resources = approval_identity(
+            tool_name, tool_input, context
+        )
         session_id = context.get("session_id")
 
         try:
@@ -2707,34 +2738,40 @@ class ToolManager:
     @property
     def browser_navigation_tool(self):
         if not self._lazy_initialized["browser_tools"]:
-            with profile_operation("ToolManager.lazy_load_browser_tools"):
-                logger.debug("Lazy-loading browser tools")
-                self._browser_navigation_tool = BrowserNavigationTool()
-                self._browser_interaction_tool = BrowserInteractionTool()
-                self._browser_screenshot_tool = BrowserScreenshotTool()
-                self._lazy_initialized["browser_tools"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_tools"]:
+                    with profile_operation("ToolManager.lazy_load_browser_tools"):
+                        logger.debug("Lazy-loading browser tools")
+                        self._browser_navigation_tool = BrowserNavigationTool()
+                        self._browser_interaction_tool = BrowserInteractionTool()
+                        self._browser_screenshot_tool = BrowserScreenshotTool()
+                        self._lazy_initialized["browser_tools"] = True
         return self._browser_navigation_tool
 
     @property
     def browser_interaction_tool(self):
         if not self._lazy_initialized["browser_tools"]:
-            with profile_operation("ToolManager.lazy_load_browser_tools"):
-                logger.debug("Lazy-loading browser tools")
-                self._browser_navigation_tool = BrowserNavigationTool()
-                self._browser_interaction_tool = BrowserInteractionTool()
-                self._browser_screenshot_tool = BrowserScreenshotTool()
-                self._lazy_initialized["browser_tools"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_tools"]:
+                    with profile_operation("ToolManager.lazy_load_browser_tools"):
+                        logger.debug("Lazy-loading browser tools")
+                        self._browser_navigation_tool = BrowserNavigationTool()
+                        self._browser_interaction_tool = BrowserInteractionTool()
+                        self._browser_screenshot_tool = BrowserScreenshotTool()
+                        self._lazy_initialized["browser_tools"] = True
         return self._browser_interaction_tool
 
     @property
     def browser_screenshot_tool(self):
         if not self._lazy_initialized["browser_tools"]:
-            with profile_operation("ToolManager.lazy_load_browser_tools"):
-                logger.debug("Lazy-loading browser tools")
-                self._browser_navigation_tool = BrowserNavigationTool()
-                self._browser_interaction_tool = BrowserInteractionTool()
-                self._browser_screenshot_tool = BrowserScreenshotTool()
-                self._lazy_initialized["browser_tools"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_tools"]:
+                    with profile_operation("ToolManager.lazy_load_browser_tools"):
+                        logger.debug("Lazy-loading browser tools")
+                        self._browser_navigation_tool = BrowserNavigationTool()
+                        self._browser_interaction_tool = BrowserInteractionTool()
+                        self._browser_screenshot_tool = BrowserScreenshotTool()
+                        self._lazy_initialized["browser_tools"] = True
         return self._browser_screenshot_tool
 
     def _browser_harness_config(self) -> Dict[str, Any]:
@@ -2819,146 +2856,212 @@ class ToolManager:
     @property
     def browser_harness_open_tab_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            with profile_operation("ToolManager.lazy_load_browser_harness_tools"):
-                logger.debug("Lazy-loading browser-harness tools")
-                harness_config = self._browser_harness_config()
-                self._browser_harness_open_tab_tool = BrowserHarnessOpenTabTool(
-                    harness_config
-                )
-                self._browser_harness_page_info_tool = BrowserHarnessPageInfoTool(
-                    harness_config
-                )
-                self._browser_harness_screenshot_tool = BrowserHarnessScreenshotTool(
-                    harness_config
-                )
-                self._browser_harness_click_tool = BrowserHarnessClickTool(
-                    harness_config
-                )
-                self._browser_harness_type_tool = BrowserHarnessTypeTool(harness_config)
-                self._browser_harness_key_tool = BrowserHarnessKeyTool(harness_config)
-                self._browser_harness_fill_tool = BrowserHarnessFillTool(harness_config)
-                self._browser_harness_wait_tool = BrowserHarnessWaitTool(harness_config)
-                self._browser_harness_js_tool = BrowserHarnessJsTool(harness_config)
-                self._browser_harness_list_tabs_tool = BrowserHarnessListTabsTool(
-                    harness_config
-                )
-                self._browser_harness_switch_tab_tool = BrowserHarnessSwitchTabTool(
-                    harness_config
-                )
-                self._lazy_initialized["browser_harness_tools"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    with profile_operation(
+                        "ToolManager.lazy_load_browser_harness_tools"
+                    ):
+                        logger.debug("Lazy-loading browser-harness tools")
+                        harness_config = self._browser_harness_config()
+                        self._browser_harness_open_tab_tool = BrowserHarnessOpenTabTool(
+                            harness_config
+                        )
+                        self._browser_harness_page_info_tool = (
+                            BrowserHarnessPageInfoTool(harness_config)
+                        )
+                        self._browser_harness_screenshot_tool = (
+                            BrowserHarnessScreenshotTool(harness_config)
+                        )
+                        self._browser_harness_click_tool = BrowserHarnessClickTool(
+                            harness_config
+                        )
+                        self._browser_harness_type_tool = BrowserHarnessTypeTool(
+                            harness_config
+                        )
+                        self._browser_harness_key_tool = BrowserHarnessKeyTool(
+                            harness_config
+                        )
+                        self._browser_harness_fill_tool = BrowserHarnessFillTool(
+                            harness_config
+                        )
+                        self._browser_harness_wait_tool = BrowserHarnessWaitTool(
+                            harness_config
+                        )
+                        self._browser_harness_js_tool = BrowserHarnessJsTool(
+                            harness_config
+                        )
+                        self._browser_harness_list_tabs_tool = (
+                            BrowserHarnessListTabsTool(harness_config)
+                        )
+                        self._browser_harness_switch_tab_tool = (
+                            BrowserHarnessSwitchTabTool(harness_config)
+                        )
+                        self._lazy_initialized["browser_harness_tools"] = True
         return self._browser_harness_open_tab_tool
 
     @property
     def browser_harness_page_info_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_page_info_tool
 
     @property
     def browser_harness_screenshot_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_screenshot_tool
 
     @property
     def browser_harness_click_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_click_tool
 
     @property
     def browser_harness_type_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_type_tool
 
     @property
     def browser_harness_key_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_key_tool
 
     @property
     def browser_harness_fill_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_fill_tool
 
     @property
     def browser_harness_wait_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_wait_tool
 
     @property
     def browser_harness_js_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_js_tool
 
     @property
     def browser_harness_list_tabs_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_list_tabs_tool
 
     @property
     def browser_harness_switch_tab_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
-            _ = self.browser_harness_open_tab_tool
+            with self._lazy_lock:
+                if not self._lazy_initialized["browser_harness_tools"]:
+                    _ = self.browser_harness_open_tab_tool
         return self._browser_harness_switch_tab_tool
 
     # PyDoll tools lazy loading
     @property
     def pydoll_browser_navigation_tool(self):
         if not self._lazy_initialized["pydoll_tools"]:
-            with profile_operation("ToolManager.lazy_load_pydoll_tools"):
-                logger.debug("Lazy-loading PyDoll browser tools")
-                _ensure_pydoll_imports()  # Lazy import PyDoll modules
-                self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
-                self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
-                self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
-                self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
-                self._lazy_initialized["pydoll_tools"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["pydoll_tools"]:
+                    with profile_operation("ToolManager.lazy_load_pydoll_tools"):
+                        logger.debug("Lazy-loading PyDoll browser tools")
+                        _ensure_pydoll_imports()  # Lazy import PyDoll modules
+                        self._pydoll_browser_navigation_tool = (
+                            PyDollBrowserNavigationTool()
+                        )
+                        self._pydoll_browser_interaction_tool = (
+                            PyDollBrowserInteractionTool()
+                        )
+                        self._pydoll_browser_screenshot_tool = (
+                            PyDollBrowserScreenshotTool()
+                        )
+                        self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
+                        self._lazy_initialized["pydoll_tools"] = True
         return self._pydoll_browser_navigation_tool
 
     @property
     def pydoll_browser_interaction_tool(self):
         if not self._lazy_initialized["pydoll_tools"]:
-            with profile_operation("ToolManager.lazy_load_pydoll_tools"):
-                logger.debug("Lazy-loading PyDoll browser tools")
-                _ensure_pydoll_imports()  # Lazy import PyDoll modules
-                self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
-                self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
-                self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
-                self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
-                self._lazy_initialized["pydoll_tools"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["pydoll_tools"]:
+                    with profile_operation("ToolManager.lazy_load_pydoll_tools"):
+                        logger.debug("Lazy-loading PyDoll browser tools")
+                        _ensure_pydoll_imports()  # Lazy import PyDoll modules
+                        self._pydoll_browser_navigation_tool = (
+                            PyDollBrowserNavigationTool()
+                        )
+                        self._pydoll_browser_interaction_tool = (
+                            PyDollBrowserInteractionTool()
+                        )
+                        self._pydoll_browser_screenshot_tool = (
+                            PyDollBrowserScreenshotTool()
+                        )
+                        self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
+                        self._lazy_initialized["pydoll_tools"] = True
         return self._pydoll_browser_interaction_tool
 
     @property
     def pydoll_browser_screenshot_tool(self):
         if not self._lazy_initialized["pydoll_tools"]:
-            with profile_operation("ToolManager.lazy_load_pydoll_tools"):
-                logger.debug("Lazy-loading PyDoll browser tools")
-                _ensure_pydoll_imports()  # Lazy import PyDoll modules
-                self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
-                self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
-                self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
-                self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
-                self._lazy_initialized["pydoll_tools"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["pydoll_tools"]:
+                    with profile_operation("ToolManager.lazy_load_pydoll_tools"):
+                        logger.debug("Lazy-loading PyDoll browser tools")
+                        _ensure_pydoll_imports()  # Lazy import PyDoll modules
+                        self._pydoll_browser_navigation_tool = (
+                            PyDollBrowserNavigationTool()
+                        )
+                        self._pydoll_browser_interaction_tool = (
+                            PyDollBrowserInteractionTool()
+                        )
+                        self._pydoll_browser_screenshot_tool = (
+                            PyDollBrowserScreenshotTool()
+                        )
+                        self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
+                        self._lazy_initialized["pydoll_tools"] = True
         return self._pydoll_browser_screenshot_tool
 
     @property
     def pydoll_browser_scroll_tool(self):
         if not self._lazy_initialized["pydoll_tools"]:
-            with profile_operation("ToolManager.lazy_load_pydoll_tools"):
-                logger.debug("Lazy-loading PyDoll browser tools")
-                _ensure_pydoll_imports()  # Lazy import PyDoll modules
-                self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
-                self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
-                self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
-                self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
-                self._lazy_initialized["pydoll_tools"] = True
+            with self._lazy_lock:
+                if not self._lazy_initialized["pydoll_tools"]:
+                    with profile_operation("ToolManager.lazy_load_pydoll_tools"):
+                        logger.debug("Lazy-loading PyDoll browser tools")
+                        _ensure_pydoll_imports()  # Lazy import PyDoll modules
+                        self._pydoll_browser_navigation_tool = (
+                            PyDollBrowserNavigationTool()
+                        )
+                        self._pydoll_browser_interaction_tool = (
+                            PyDollBrowserInteractionTool()
+                        )
+                        self._pydoll_browser_screenshot_tool = (
+                            PyDollBrowserScreenshotTool()
+                        )
+                        self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
+                        self._lazy_initialized["pydoll_tools"] = True
         return self._pydoll_browser_scroll_tool
 
     def _get_mcp_provider(self) -> MCPToolProvider:
@@ -2969,6 +3072,7 @@ class ToolManager:
         """Get available tool schemas."""
         tools = list(self.tools)
         from penguin.core_runtime.isolation import runtime_isolated
+
         if runtime_isolated():
             tools = [tool for tool in tools if tool.get("name") != "code_execution"]
         tools.extend(self._get_mcp_provider().get_tool_schemas())
