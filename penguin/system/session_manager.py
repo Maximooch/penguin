@@ -421,18 +421,25 @@ class SessionManager:
         # Add to sessions cache
         self.sessions[session_id] = (session, False)  # False = not modified
         
-        # If we've exceeded max_sessions_in_memory, remove oldest
+        # If we've exceeded max_sessions_in_memory, evict the least recently
+        # used session that is saved. A session whose save fails stays in
+        # memory (the cache briefly exceeds its limit) so its changes survive.
         if len(self.sessions) > self.max_sessions_in_memory:
-            # Get oldest (first) item from OrderedDict
-            oldest_id, (oldest_session, is_modified) = next(iter(self.sessions.items()))
-            
-            # If modified, save before removing
-            if is_modified:
-                self.save_session(oldest_session)
-                
-            # Remove from cache
-            del self.sessions[oldest_id]
-            logger.debug(f"Evicted session {oldest_id} from cache (LRU policy)")
+            for candidate_id, (candidate, is_modified) in list(self.sessions.items()):
+                if candidate_id == session_id:
+                    continue
+                if is_modified and (
+                    self.save_session(candidate) is False
+                    or self.sessions.get(candidate_id, (None, True))[1]
+                ):
+                    logger.warning(
+                        "Keeping session %s in memory: it has unsaved changes",
+                        candidate_id,
+                    )
+                    continue
+                self.sessions.pop(candidate_id, None)
+                logger.debug(f"Evicted session {candidate_id} from cache (LRU policy)")
+                break
     
     def _load_from_file(self, file_path: Path) -> Optional[Session]:
         """
