@@ -758,7 +758,8 @@ independently.
 - [ ] **SM-102 ACP restore never resolves child-scoped records** (b): `penguin/integrations/acp/processes.py:144-165`, `sessions.py:189-199`.
 - [x] **SM-103 ACP per-session maps never pruned** (b): `ChildTracker.children` and `replay_parents`, approval locks and task sets, `QuestionBridge.tasks`, `ProcessTracker.states`.
   - State: (2026-11-15) fixed: approval and question task sets drop their session key when their last task finishes, and `close_session` calls one `_forget_root` that removes the root's finished children (and their replay parents and approval locks) and empty per-session entries; `delete_session` also drops the root's process states. Active children that cannot be cancelled keep their records; process states stay while the session exists, since they decide unresolved background work. `test_cancel_rejects_waiting_form_and_late_answer` now reads the task set with `.get`.
-- [ ] **SM-104 ACP delete closes before a delete that can fail** (b): `penguin/integrations/acp/server.py:636-649`.
+- [x] **SM-104 ACP delete closes before a delete that can fail** (b): `penguin/integrations/acp/server.py:636-649`.
+  - State: (2026-11-15) fixed: `delete_session` deletes the conversation before closing the ACP session (both under the process gate, after the busy checks), so a failed delete leaves the session open and usable, matching the error. Journal and assets are removed after the close, as before.
 
 ### Tier 3
 
@@ -1056,3 +1057,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-98: fixed (2026-11-15). `pytest -q tests/integrations/test_acp_resolved_approval.py`: 1 passed, red before the fix (the dialog was shown for a denied request); every ACP test file: 27 files, all passed.
 - SM-99: fixed (2026-11-15). `pytest -q tests/integrations/test_acp_response_tracking.py`: 1 passed, red before the fix (the session was never announced); every ACP test file: 28 files, all passed.
 - SM-103: fixed (2026-11-15). `pytest -q tests/integrations/test_acp_session_maps_pruned.py`: 2 passed, both red before the fix (an empty task set and a finished child stayed); every ACP test file: 29 files, all passed after updating one assertion that indexed the removed key.
+- SM-104: fixed (2026-11-15). `pytest -q tests/integrations/test_acp_delete_failure.py`: 1 passed, red before the fix (the session was gone after a failed delete); every ACP test file: 30 files, all passed.

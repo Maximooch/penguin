@@ -677,17 +677,19 @@ class PenguinACPAgent:
             for path in (assets, journal):
                 if not path.resolve().is_relative_to(base):
                     raise RequestError.invalid_params({"reason": "Unsafe storage path"})
-            if active is not None:
-                await self.close_session(session_id)
             delete = getattr(
                 self.core.conversation_manager,
                 "delete_conversation",
                 self._registry.store.delete_session,
             )
+            # Delete first: if it fails the session stays open, as the error
+            # tells the client. Nothing runs on it while this holds the gate.
             if not delete(session_id):
                 raise RequestError.internal_error(
                     {"reason": "Could not delete session"}
                 )
+            if active is not None:
+                await self.close_session(session_id)
             journal.unlink(missing_ok=True)
             if assets.exists():
                 shutil.rmtree(assets)
