@@ -60,7 +60,13 @@ class QuestionBridge:
             task = loop.create_task(self.ask(request))
             owned = self.tasks.setdefault(sid, set())
             owned.add(task)
-            task.add_done_callback(owned.discard)
+
+            def done(completed: asyncio.Task[Any]) -> None:
+                owned.discard(completed)
+                if not owned and self.tasks.get(sid) is owned:
+                    del self.tasks[sid]
+
+            task.add_done_callback(done)
 
         loop.call_soon_threadsafe(schedule)
 

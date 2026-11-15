@@ -756,7 +756,8 @@ independently.
 - [ ] **SM-100 ACP load writes synthesized failures before validation** (b): `penguin/integrations/acp/sessions.py:200-215` records them even when the load is then rejected.
 - [ ] **SM-101 ACP load half-applied when replay fails** (b): `penguin/integrations/acp/server.py:743-786` installs the session and provider before a replay that can raise.
 - [ ] **SM-102 ACP restore never resolves child-scoped records** (b): `penguin/integrations/acp/processes.py:144-165`, `sessions.py:189-199`.
-- [ ] **SM-103 ACP per-session maps never pruned** (b): `ChildTracker.children` and `replay_parents`, approval locks and task sets, `QuestionBridge.tasks`, `ProcessTracker.states`.
+- [x] **SM-103 ACP per-session maps never pruned** (b): `ChildTracker.children` and `replay_parents`, approval locks and task sets, `QuestionBridge.tasks`, `ProcessTracker.states`.
+  - State: (2026-11-15) fixed: approval and question task sets drop their session key when their last task finishes, and `close_session` calls one `_forget_root` that removes the root's finished children (and their replay parents and approval locks) and empty per-session entries; `delete_session` also drops the root's process states. Active children that cannot be cancelled keep their records; process states stay while the session exists, since they decide unresolved background work. `test_cancel_rejects_waiting_form_and_late_answer` now reads the task set with `.get`.
 - [ ] **SM-104 ACP delete closes before a delete that can fail** (b): `penguin/integrations/acp/server.py:636-649`.
 
 ### Tier 3
@@ -1054,3 +1055,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-94: fixed (2026-11-15). `pytest -q tests/api/test_runtime_event_ledger_limits.py`: 4 passed; `0` was red before the fix (the ledger was emptied). Every runtime-event, ledger, SSE and event-service test file in one process passes.
 - SM-98: fixed (2026-11-15). `pytest -q tests/integrations/test_acp_resolved_approval.py`: 1 passed, red before the fix (the dialog was shown for a denied request); every ACP test file: 27 files, all passed.
 - SM-99: fixed (2026-11-15). `pytest -q tests/integrations/test_acp_response_tracking.py`: 1 passed, red before the fix (the session was never announced); every ACP test file: 28 files, all passed.
+- SM-103: fixed (2026-11-15). `pytest -q tests/integrations/test_acp_session_maps_pruned.py`: 2 passed, both red before the fix (an empty task set and a finished child stayed); every ACP test file: 29 files, all passed after updating one assertion that indexed the removed key.

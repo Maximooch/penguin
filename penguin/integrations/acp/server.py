@@ -619,7 +619,36 @@ class PenguinACPAgent:
             for child_id, child in self._children.children.items():
                 if child.root == session_id:
                     self._grants.close(child_id)
+            self._forget_root(session_id)
         return CloseSessionResponse()
+
+    def _forget_root(self, root: str, *, deleted: bool = False) -> None:
+        """Drop bookkeeping for a closed root and its finished children.
+
+        Active children (not cancellable) keep their records. Process states
+        stay while the session exists, since they decide whether it still has
+        unresolved background work; a delete drops them too.
+        """
+        finished = [
+            sid
+            for sid, child in self._children.children.items()
+            if child.root == root and not child.active
+        ]
+        for sid in finished:
+            self._children.children.pop(sid, None)
+            self._children.replay_parents.pop(sid, None)
+        for sid in (root, *finished):
+            lock = self._approval_state_locks.get(sid)
+            if lock is not None and not lock.locked():
+                self._approval_state_locks.pop(sid, None)
+            if not self._approval_tasks_by_session.get(sid):
+                self._approval_tasks_by_session.pop(sid, None)
+            if not self._questions.tasks.get(sid):
+                self._questions.tasks.pop(sid, None)
+        if deleted:
+            owned = {root, *finished}
+            for key in [key for key in self._processes.states if key[0] in owned]:
+                self._processes.states.pop(key, None)
 
     async def delete_session(self, session_id: str) -> DeleteSessionResponse:
         """Delete only indexed ACP-owned history; reject all busy sessions."""
@@ -662,6 +691,7 @@ class PenguinACPAgent:
             journal.unlink(missing_ok=True)
             if assets.exists():
                 shutil.rmtree(assets)
+            self._forget_root(session_id, deleted=True)
         return DeleteSessionResponse()
 
     async def _delete_request(self, params: Any) -> DeleteSessionResponse:
@@ -1124,6 +1154,10 @@ class PenguinACPAgent:
             def done(completed: asyncio.Task[Any]) -> None:
                 self._approval_tasks.discard(completed)
                 owned.discard(completed)
+                if not owned and (
+                    self._approval_tasks_by_session.get(request.session_id) is owned
+                ):
+                    del self._approval_tasks_by_session[request.session_id]
 
             task.add_done_callback(done)
 
