@@ -633,7 +633,8 @@ Check for callers first. If there are none, delete.
 
 - [x] **SM-63 Interrupt flags** (a): `penguin/engine.py:765`, `penguin/run_mode.py:81,479,757`, `penguin/core_runtime/core_state.py:56`; `Engine._interrupted` is never read; `core._interrupted` is never set True.
   - State: `Engine._interrupted` is deleted; nothing read it. Left in place: `core._interrupted` (read by the continuous loop and exposed by `process_facade`, though nothing sets it to True) and `RunMode._interrupted` (set by the MCP run-mode tool); removing those changes a public attribute and an MCP tool's behaviour.
-- [ ] **SM-64 Legacy `get_response` retry** (b): `penguin/core_runtime/response_generation.py:31-114`; swallows cancellation and persists an apology string.
+- [x] **SM-64 Legacy `get_response` retry** (b): `penguin/core_runtime/response_generation.py:31-114`; swallows cancellation and persists an apology string.
+  - State: (done, 2026-11-15) kept, not deleted: `core.get_response` is still called by `process_runtime` when no engine is present and by `interfaces/web.py`. A cancelled provider call now re-raises instead of being logged and retried, and after empty answers the apology is returned for display (with `error: empty_response`) but no longer saved into the conversation as the assistant's own message. `test_get_response_uses_fallback_after_empty_response_retries` asserted the saved apology and now asserts it is not saved.
 - [ ] **SM-65 Legacy `local_task` status strings** (b): `penguin/local_task/manager.py:137-182` and bypass sites; handlers are unreachable until SM-31 is fixed. Still imported by `utils/parser.py:22`.
 - [ ] **SM-66 Legacy process attach** (b): `penguin/utils/parser.py:1112,2015-2038`, `penguin/utils/process_manager.py:13-160`.
 - [ ] **SM-67 Legacy Textual TUI stream** (c): `penguin/cli/tui.py:1473-2614`; referenced only from `misc/` and a prototype.
@@ -897,3 +898,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-60: fixed (2026-11-15). `pytest -q tests/tools/test_lazy_tool_loading.py`: 1 passed, red before the fix (two executors built); every test file that uses the tool manager: 72 files, 950 passed apart from the known baseline failures.
 - SM-61: fixed (2026-11-15). `pytest -q tests/memory/test_incremental_index_reindex.py`: 2 passed, both red before the fix; every memory test file: 3 files, 48 passed.
 - SM-62: fixed (2026-11-15). `pytest -q tests/test_git_pr_flow_restore.py`: 1 passed, red before the fix (real temporary repository, push fails for lack of a remote); git and workflow-orchestrator test files: 6 run, 11 passed; three workflow files are deselected by the repo's pytest configuration, as before.
+- SM-64: fixed (2026-11-15). `pytest -q tests/core_runtime/test_legacy_get_response.py`: 2 passed, both red before the fix; response-generation and core-process test files: 27 files, 373 passed after updating the one test that pinned the saved apology.
