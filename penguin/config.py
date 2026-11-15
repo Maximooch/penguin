@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 from typing import Any, Dict, Optional, Literal, List, Callable, Union
 
 import yaml  # type: ignore
-from dotenv import load_dotenv  # type: ignore
+from dotenv import find_dotenv, load_dotenv  # type: ignore
 
 # LinkAI Workspace Configuration
 # LINKAI_WORKSPACE_ID = os.getenv('LINKAI_WORKSPACE_ID')
@@ -804,7 +804,15 @@ def _ensure_env_loaded():
         return
     _env_loaded = True
 
-    # 1) User-level: ~/.config/penguin/.env (or APPDATA equivalent) – provides persistent keys
+    # Precedence: variables already in the process (for example exported in
+    # the shell) > the project .env > the user-level .env. Without override the
+    # first value loaded for a key wins, so the project file is loaded first.
+    project_env = find_dotenv()
+    if project_env:
+        load_dotenv(dotenv_path=project_env, override=False)
+
+    # User-level: ~/.config/penguin/.env (or APPDATA equivalent) – persistent
+    # keys that fill in whatever the shell and project did not set.
     try:
         if os.name == 'posix':
             user_env_dir = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'penguin'
@@ -816,9 +824,6 @@ def _ensure_env_loaded():
     except Exception:
         # Non-fatal if user-level .env loading fails
         pass
-
-    # 2) Project-level: nearest .env up the CWD chain – overrides user-level values
-    load_dotenv(override=True)
 
 def _ensure_diagnostics_initialized():
     """Lazy-initialize diagnostics. Called on first diagnostics access."""

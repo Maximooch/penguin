@@ -243,6 +243,12 @@ on its own.
   process, and `process_enter` no longer waits forever for a silent process.
   `utils/process_manager.py` is now used only by `utils/plugin_parser.py`,
   which nothing imports; both are deletion candidates for Maximus.
+- SM-71: environment precedence is now shell-exported variables, then the
+  project `.env`, then the user-level `~/.config/penguin/.env`. Before, the
+  project `.env` overrode keys exported in the shell for a run. The project
+  `.env` is still found the same way as before (python-dotenv's
+  `find_dotenv`, which starts from Penguin's own source directory rather than
+  the current directory, despite the old comment).
 - SM-40: when the session gate cannot be taken before the run deadline, the
   goal run now fails with a conflict before any claim is recorded. Before,
   it recorded the claim and then recorded a `timeout` result.
@@ -655,7 +661,8 @@ Check for callers first. If there are none, delete.
   - State: (partial, 2026-11-15) fixed: `/exit` now ends the headless REPL. The interface returned `status: exit` and marked itself inactive, but the chat loop checked neither and prompted again; it now leaves the loop when a command returns `status: exit`. Not verified, so not changed: whether Ctrl-C during processing reaches `core.process`. The loop awaits the core in the same task, so asyncio's SIGINT handling should cancel it, but `process_runtime` turns that cancellation into an aborted result, and confirming this needs an interactive terminal.
 - [x] **SM-70 CLI message dedupe** (a): `penguin/cli/cli.py:3754-4151`, `penguin/cli/event_manager.py:130-189`; keyed on the first 50 characters, never pruned.
   - State: (partial) a reply in a later turn that opens with the same 50 characters is no longer hidden; the key is a duplicate only within the turn that recorded it. Left as is: user messages keep the session-wide check, because the turn only advances on a user message and a repeated `continue` cannot be told from a double delivery by content alone; the sets are still never pruned.
-- [ ] **SM-71 Config root and env precedence** (b): `penguin/config.py:30-831`; module-level `config` never reloads; a project `.env` overrides shell-exported keys.
+- [x] **SM-71 Config root and env precedence** (b): `penguin/config.py:30-831`; module-level `config` never reloads; a project `.env` overrides shell-exported keys.
+  - State: (partial, 2026-11-15) fixed: `_ensure_env_loaded` no longer lets the project `.env` override keys exported in the shell; it loads the project file and then the user-level file, both without override, so the order is shell, project, user. Not changed: the module-level `config` is still loaded once at import and never reloaded; and `find_dotenv` still searches from Penguin's own source directory, not the user's working directory (changing that could break development setups that keep keys in the repository's `.env`).
 - [x] **SM-72 Sidecar binary cache** (b): `penguin/cli/opencode_launcher.py:531-717`; a partial copy passes the existence check.
   - State: the binary is copied to a sibling temporary file and renamed into place. No failing-first run: the helper is new; the old code copied straight to the final path. Still open: no lock between concurrent launchers; the marker is trusted with only an existence check.
 - [ ] **SM-73 First-run setup marker** (b): `penguin/setup/wizard.py:123-354`; the marker file is written and never read.
@@ -917,3 +924,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-67: on hold (2026-11-15); see its State.
 - SM-68: on hold (2026-11-15); see its State.
 - SM-69: partly fixed (2026-11-15). `pytest -q tests/test_cli_exit_command.py`: 1 passed, red on the old `cli.py` (prompted twice); CLI test files: 86 passed apart from the two known `test_cli_surface_audit_regressions.py` baseline failures.
+- SM-71: partly fixed (2026-11-15). `pytest -q tests/test_env_file_precedence.py`: 1 passed, red before the fix (the project file replaced the shell value); config test files: 21 files, 147 passed apart from the two known `test_cli_surface_audit_regressions.py` baseline failures.
