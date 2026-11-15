@@ -80,6 +80,15 @@ class ManagedProcess:
     notified: bool = False
     last_output_event: float = 0.0
     completion_observed: bool = False
+    retired: bool = False
+
+    def claim_completion_reason(self, reason: str) -> bool:
+        """Record why a running process is being ended; the first claim wins."""
+        with self.changed:
+            if self.completion_reason is not None or self.process.poll() is not None:
+                return False
+            self.completion_reason = reason
+            return True
 
     def append_output(self, stream: str, text: str) -> None:
         """Append an event while holding ``changed``."""
@@ -305,6 +314,9 @@ class ProcessRuntime:
                 if record.process.stdin is not None:
                     record.process.stdin.close()
             del self._processes[record.process_id]
+            # A poll waiting on this record now answers from the receipt.
+            record.retired = True
+            record.changed.notify_all()
 
     def retired_result(
         self,
@@ -372,8 +384,12 @@ class ProcessRuntime:
         with record.changed:
             deadline = started + wait_ms / 1000
             while True:
-                # Recheck after every wait: another call may have consumed output
-                # or completed this same request while the condition was released.
+                # Recheck after every wait: another call may have consumed output,
+                # completed this same request, or retired the record meanwhile.
+                if record.retired:
+                    return self.retired_result(
+                        process_id, consumer_id=consumer_id, request_id=request_id
+                    ) or self._error(process_id, "unknown_process_id")
                 if key is not None and key in record.replies:
                     return dict(record.replies[key])
                 cursor = (
@@ -551,6 +567,12 @@ class ProcessRuntime:
                     logger.warning("taskkill failed; using native owned-tree cleanup")
                     terminate_owned_tree(record.process)
             elif record.owns_group:
+                if record.process.returncode is not None and _pid_in_use(
+                    record.process.pid
+                ):
+                    # Penguin reaped the shell and another program now has its
+                    # pid, so the group id may name that program's group.
+                    return
                 os.killpg(
                     record.process.pid,
                     {"interrupt": signal.SIGINT, "kill": signal.SIGKILL}.get(
@@ -580,8 +602,7 @@ class ProcessRuntime:
             or timeout < 0
         ):
             return self._error(process_id, "invalid stop mode or timeout")
-        if record.process.poll() is None and record.completion_reason is None:
-            record.completion_reason = "cancelled"
+        record.claim_completion_reason("cancelled")
         self._signal(record, mode)
         try:
             record.process.wait(timeout=timeout)
@@ -598,29 +619,47 @@ class ProcessRuntime:
     def cleanup(
         self, *, mode: str = "terminate", timeout: float = 2.0
     ) -> dict[str, Any]:
-        """Stop all owned groups and close pipes; retain logs on disk."""
+        """Stop all owned groups, close pipes and retire every record.
+
+        Stops run without the runtime lock, so other calls are not held up by
+        a slow stop. Retired records keep their receipts, so a retried start
+        with the same process id is not run again. Logs stay on disk.
+        """
         stopped: list[str] = []
+        removed: list[str] = []
         errors: dict[str, str] = {}
         with self._lock:
-            removed = list(self._processes)
-            for process_id, record in self._processes.items():
-                was_running = record.process.poll() is None
+            records = list(self._processes.values())
+        for record in records:
+            process_id = record.process_id
+            was_running = record.process.poll() is None
+            try:
+                self.stop(process_id, mode=mode, timeout=timeout)
+                if was_running:
+                    stopped.append(process_id)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                errors[process_id] = str(exc)
+                logger.exception("Process cleanup failed: %s", process_id)
+            finally:
+                record.stop_reader.set()
+                if record.reader is not None:
+                    record.reader.join(timeout=1)
+                for stream in ("stdout", "stderr"):
+                    pipe = getattr(record.process, stream)
+                    if pipe is not None:
+                        pipe.close()
+        with self._lock:
+            for record in records:
+                if self._processes.get(record.process_id) is not record:
+                    continue
                 try:
-                    self.stop(process_id, mode=mode, timeout=timeout)
-                    if was_running:
-                        stopped.append(process_id)
-                except (OSError, subprocess.TimeoutExpired) as exc:
-                    errors[process_id] = str(exc)
-                    logger.exception("Process cleanup failed: %s", process_id)
-                finally:
-                    record.stop_reader.set()
-                    if record.reader is not None:
-                        record.reader.join(timeout=1)
-                    for stream in ("stdin", "stdout", "stderr"):
-                        pipe = getattr(record.process, stream)
-                        if pipe is not None:
-                            pipe.close()
-            self._processes.clear()
+                    self._retire(record)
+                except OSError as exc:
+                    # Keep the record: without a receipt, start would rerun it.
+                    errors[record.process_id] = f"receipt_not_saved: {exc}"
+                    logger.exception("Process receipt failed: %s", record.process_id)
+                    continue
+                removed.append(record.process_id)
         return {
             "action": "process_cleanup",
             "status": "error" if errors else "completed",
@@ -661,7 +700,7 @@ class ProcessRuntime:
                         and time.monotonic() >= record.deadline
                         and record.process.poll() is None
                     ):
-                        record.completion_reason = "timeout"
+                        record.claim_completion_reason("timeout")
                         self._signal(record, "kill")
                         record.deadline = None
                     if record.process.poll() is not None:
@@ -823,6 +862,17 @@ class ProcessRuntime:
             "error": error,
             "process_id": process_id,
         }
+
+
+def _pid_in_use(pid: int) -> bool:
+    """Return whether some process currently has ``pid``."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 __all__ = ["ManagedProcess", "ProcessOutputEvent", "ProcessRuntime"]

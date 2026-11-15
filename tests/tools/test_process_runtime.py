@@ -315,8 +315,10 @@ def test_process_runtime_cleanup_stops_and_removes_managed_processes() -> None:
     assert cleanup["status"] == "completed"
     assert cleanup["stopped"] == [process_id]
     assert cleanup["removed"] == [process_id]
+    assert process_id not in runtime._processes
+    # The receipt survives cleanup, so the id still reports the old result.
     assert polled["status"] == "error"
-    assert polled["error"] == "unknown_process_id"
+    assert polled["error"] == "process_result_expired"
 
 
 def test_process_runtime_start_failure_returns_error(tmp_path: Path) -> None:

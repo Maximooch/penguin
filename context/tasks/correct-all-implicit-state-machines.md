@@ -176,6 +176,16 @@ on its own.
   `checkpoint_index.json.corrupt` and the index is rebuilt from the
   checkpoint files, which each hold their own metadata. One bad entry is
   skipped instead of dropping the whole index.
+- SM-24: once Penguin has reaped a process's shell, it signals that
+  process group only if no process now has the shell's pid. If one does, the
+  pid was reused and the group id may name another program's group (on macOS
+  most apps lead their own group), so nothing is sent. Children that outlived
+  their shell are still killed when the pid is free.
+- SM-24: `ProcessRuntime.cleanup` retires each record instead of dropping
+  it, so the retry receipt survives and a retried start with the same
+  process id reports `process_result_expired` instead of running the command
+  again. `test_process_runtime_cleanup_stops_and_removes_managed_processes`
+  now expects that instead of `unknown_process_id`.
 
 ## Item format
 
@@ -453,11 +463,12 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `penguin/system/context_epoch.py:136`
   - Rollover can fire between a tool call and its result.
   - Correction: defer rollover while a tool group is open.
-- [ ] **SM-24 Managed process lifecycle** (c)
+- [x] **SM-24 Managed process lifecycle** (c)
   - `penguin/tools/process_runtime.py:45-651`
   - `completion_reason` is written from two threads. `stop` can signal a
     reaped pid. `cleanup` holds the lock across blocking stops and drops
     receipts. Lookups race with `_retire`.
+  - State: (done, 2026-11-15) the completion reason has one writer rule: `ManagedProcess.claim_completion_reason` sets it under the record's lock only while the process runs and nothing has claimed it, so a stop's `cancelled` is no longer overwritten by a deadline that fires during the stop. `_signal` no longer sends to the group of a reaped shell whose pid is in use again. `cleanup` collects the records under the lock, stops them without it, then retires each one (a record whose receipt cannot be written is kept, so its id cannot be rerun). A retired record is marked, and a poll that finds it retired answers from the receipt, so a request and its retry get the same answer.
 - [ ] **SM-25 Process completion notice and idempotent start** (c)
   - `penguin/tools/process_tools.py:47-267`,
     `penguin/tools/async_dispatch.py:187-204`
@@ -787,3 +798,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-16: decision (2026-11-14) from Maximus: a cancelled chat request keeps returning HTTP 200 with `aborted: true`. Nothing left open on SM-16 apart from the known limits in its State line.
 - SM-15: fixed (2026-11-14). `pytest -q tests/test_engine_loop_termination.py`: 14 passed, 10 red before the fix; `PENGUIN_TEST_BEND=1 pytest -q tests/integrations/test_bend_loop_termination.py`: 5 passed (laws, 4096 + 729 sequences against Python, two mutations rejected); engine, core-runtime, A2A, task, agent, web and API suites: 158 files pass apart from the known `test_resolve_request_runtime_uses_runtime_helper` baseline failure.
 - SM-22: fixed (2026-11-15). `pytest -q tests/system/test_checkpoint_lifecycle.py`: 7 passed, all 7 red before the fix; `tests/system`, checkpoint, conversation, phase-1, CLI-integration and package-export tests: 29 files, 230 passed.
+- SM-24: fixed (2026-11-15). `pytest -q tests/tools/test_process_runtime_races.py`: 6 passed, 5 red before the fix (the sixth guards that children outliving their shell are still killed); 3 runs stable. All 40 test files that use the process runtime or tools: 565 passed.
