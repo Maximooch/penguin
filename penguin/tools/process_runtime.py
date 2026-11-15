@@ -274,6 +274,17 @@ class ProcessRuntime:
                     next_sequence=record.next_sequence - 1,
                 )
 
+    def list_processes(
+        self, *, owner: tuple[str, str] | None = None
+    ) -> dict[str, str]:
+        """Return each live process id and its status, optionally for one owner."""
+        with self._lock:
+            return {
+                process_id: record.status()
+                for process_id, record in self._processes.items()
+                if owner is None or record.owner == owner
+            }
+
     def _retired_path(self, process_id: str) -> Path | None:
         if self._retired_dir is None:
             return None

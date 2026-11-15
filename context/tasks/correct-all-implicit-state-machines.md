@@ -235,6 +235,14 @@ on its own.
   push or PR creation), the repository is checked out back on the branch it
   started from. Committed work stays on the feature branch. A successful PR
   still leaves the feature branch checked out, as before.
+- SM-66: the ActionXML `process_*` tags now run on the same
+  `ProcessRuntime` as the native process tools (the process name is its
+  id), instead of the legacy `ProcessManager`. Their reply text changed
+  slightly. `process_exit` leaves the session but keeps the process and its
+  input open, reusing a name is refused instead of orphaning the running
+  process, and `process_enter` no longer waits forever for a silent process.
+  `utils/process_manager.py` is now used only by `utils/plugin_parser.py`,
+  which nothing imports; both are deletion candidates for Maximus.
 - SM-40: when the session gate cannot be taken before the run deadline, the
   goal run now fails with a conflict before any claim is recorded. Before,
   it recorded the claim and then recorded a `timeout` result.
@@ -637,7 +645,8 @@ Check for callers first. If there are none, delete.
   - State: (done, 2026-11-15) kept, not deleted: `core.get_response` is still called by `process_runtime` when no engine is present and by `interfaces/web.py`. A cancelled provider call now re-raises instead of being logged and retried, and after empty answers the apology is returned for display (with `error: empty_response`) but no longer saved into the conversation as the assistant's own message. `test_get_response_uses_fallback_after_empty_response_retries` asserted the saved apology and now asserts it is not saved.
 - [x] **SM-65 Legacy `local_task` status strings** (b): `penguin/local_task/manager.py:137-182` and bypass sites; handlers are unreachable until SM-31 is fixed. Still imported by `utils/parser.py:22`.
   - State: (done, 2026-11-15) kept, not deleted: `ProjectManager` from `local_task` is still imported by `utils/parser.py` and `utils/plugin_parser.py`, and SM-31 made its bus handlers live. Every status change now goes through `Task.transition_to`: the completion and failure event handlers, `complete`, `complete_task`, the execution-record fallbacks and project completion used to assign `task.status` directly, so a cancelled or archived task could be marked completed. `transition_to` treats a same-state move as a no-op and no longer forces the new state when it hits an error. `complete_task` returns an error and `complete` raises `ValueError` when the table refuses the move.
-- [ ] **SM-66 Legacy process attach** (b): `penguin/utils/parser.py:1112,2015-2038`, `penguin/utils/process_manager.py:13-160`.
+- [x] **SM-66 Legacy process attach** (b): `penguin/utils/parser.py:1112,2015-2038`, `penguin/utils/process_manager.py:13-160`.
+  - State: (done, 2026-11-15) the ActionXML process tags (`process_start`, `stop`, `status`, `list`, `enter`, `send`, `exit`) in `ActionExecutor` now run on `ToolManager.process_runtime` with the execution context's owner, the same runtime and ownership as the native tools; `ProcessRuntime.list_processes` is added for `process_list`. The legacy `ProcessManager` overwrote a running process when a name was reused, blocked the event loop while stopping, let unread output pipes fill and hang the child, closed the child's stdin on `process_exit`, and `process_enter` waited forever for output from a silent process (the old code hung the new test). Left for Maximus: `utils/process_manager.py` and `utils/plugin_parser.py` (no importers) can be deleted.
 - [ ] **SM-67 Legacy Textual TUI stream** (c): `penguin/cli/tui.py:1473-2614`; referenced only from `misc/` and a prototype.
 - [ ] **SM-68 Legacy `BrowserManager`** (b): `penguin/tools/browser_tools.py:42,181`; `initialize` always returns False.
 - [ ] **SM-69 REPL interrupt and turn loop** (b): `penguin/cli/cli.py:4103-4602`, `penguin/cli/session_manager.py:52`; Ctrl-C during processing never cancels the core; `/exit` sets a flag nothing checks.
@@ -901,3 +910,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-62: fixed (2026-11-15). `pytest -q tests/test_git_pr_flow_restore.py`: 1 passed, red before the fix (real temporary repository, push fails for lack of a remote); git and workflow-orchestrator test files: 6 run, 11 passed; three workflow files are deselected by the repo's pytest configuration, as before.
 - SM-64: fixed (2026-11-15). `pytest -q tests/core_runtime/test_legacy_get_response.py`: 2 passed, both red before the fix; response-generation and core-process test files: 27 files, 373 passed after updating the one test that pinned the saved apology.
 - SM-65: fixed (2026-11-15). `pytest -q tests/test_local_task_status_transitions.py`: 2 passed, both red before the fix; parser and local_task test files: 30 files, 404 passed; `test_tool_timeout_structured_errors` failed once under load and passes alone (known flaky).
+- SM-66: fixed (2026-11-15). `pytest -q tests/test_actionxml_process_runtime.py`: 2 passed; on the old code the run hung in `process_enter`; parser and process test files: 42 files, 478 passed.
