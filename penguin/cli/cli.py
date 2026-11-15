@@ -4383,6 +4383,14 @@ Welcome to Penguin!
                                 user_input[1:]
                             )
 
+                        exit_requested = (
+                            isinstance(response, dict)
+                            and response.get("status") == "exit"
+                        )
+                        if exit_requested:
+                            self.console.print(response.get("message") or "Goodbye!")
+                            break
+
                         # Display response based on its type
                         if isinstance(response, dict):
                             # Handle error responses
