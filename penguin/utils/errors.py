@@ -88,6 +88,18 @@ class AgentNotFoundError(PenguinError):
         )
 
 
+class RunModeBusyError(PenguinError):
+    """RunMode was started while another RunMode is still running."""
+    def __init__(self, message: str = "RunMode is already running", **kwargs):
+        super().__init__(
+            message,
+            code="RUNMODE_BUSY",
+            recoverable=True,
+            suggested_action="stop_or_wait_for_runmode",
+            **kwargs
+        )
+
+
 class TaskExecutionError(PenguinError):
     """Task execution failed."""
     def __init__(self, message: str, **kwargs):

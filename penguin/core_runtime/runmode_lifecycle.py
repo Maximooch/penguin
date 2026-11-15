@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from penguin.utils.errors import RunModeBusyError
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -25,7 +27,16 @@ async def start_run_mode(
     log_error: Callable[..., None],
     logger: Any,
 ) -> None:
-    """Start and clean up RunMode against a core-like owner."""
+    """Start and clean up RunMode against a core-like owner.
+
+    Raises:
+        RunModeBusyError: Another RunMode is still running on this owner. Its
+            callbacks and state are left untouched.
+    """
+    if getattr(owner, "_runmode_active", False):
+        raise RunModeBusyError(
+            "RunMode is already running; stop it or wait for it to finish"
+        )
     owner._ui_update_callback = ui_update_callback_for_cli
     owner._runmode_stream_callback = owner._prepare_runmode_stream_callback(
         stream_callback_for_cli
