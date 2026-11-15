@@ -54,18 +54,63 @@ class ProcessTools:
             tuple[str, str],
             tuple[asyncio.AbstractEventLoop, Callable[..., Awaitable[None]], Context],
         ] = {}
+        # Steps in progress per owner. A listener lives while its owner has a
+        # step in progress or a running process, whichever ends later.
+        self._steps: dict[tuple[str, str], int] = {}
 
     def bind(
         self, owner: tuple[str, str], emit: Callable[..., Awaitable[None]]
     ) -> None:
-        """Bind an event sink on its owning loop; payloads carry explicit scope."""
+        """Bind an event sink for one step; pair every call with ``release``."""
         with self._lock:
             self._listeners[owner] = (asyncio.get_running_loop(), emit, copy_context())
+            self._steps[owner] = self._steps.get(owner, 0) + 1
+
+    def release(self, owner: tuple[str, str]) -> None:
+        """End one step's binding; the sink stays while a process still runs."""
+        with self._lock:
+            remaining = self._steps.get(owner, 0) - 1
+            if remaining > 0:
+                self._steps[owner] = remaining
+            else:
+                self._steps.pop(owner, None)
+            self._drop_idle_listener(owner)
+
+    def _drop_idle_listener(self, owner: tuple[str, str]) -> None:
+        """Remove the owner's sink when nothing can still emit to it (lock held)."""
+        if owner in self._steps:
+            return
+        if any(
+            record.owner == owner and record.process.poll() is None
+            for record in list(self.runtime._processes.values())
+        ):
+            return
+        self._listeners.pop(owner, None)
 
     def pending(self, owner: tuple[str, str]) -> list[dict[str, Any]]:
-        """Peek at completion notices until the conversation persists them."""
+        """Peek at completion notices without claiming them."""
         with self._lock:
             return list(self._pending.get(owner, {}).values())
+
+    def take_pending(self, owner: tuple[str, str]) -> list[dict[str, Any]]:
+        """Claim the owner's completion notices; each is handed out once.
+
+        A caller that cannot persist a claimed notice returns it with
+        ``restore_pending`` so a later step delivers it.
+        """
+        with self._lock:
+            notices = self._pending.pop(owner, {})
+            self._observed.update(notices)
+            return list(notices.values())
+
+    def restore_pending(
+        self, owner: tuple[str, str], notices: list[dict[str, Any]]
+    ) -> None:
+        """Return claimed notices that were not persisted."""
+        with self._lock:
+            for notice in notices:
+                self._observed.discard(notice["process_id"])
+                self._pending.setdefault(owner, {})[notice["process_id"]] = notice
 
     def acknowledge(self, owner: tuple[str, str], process_id: str) -> None:
         """Remove an observed completion notice without consuming process output."""
@@ -82,7 +127,13 @@ class ProcessTools:
             if kind == "completed" and payload["process_id"] not in self._observed:
                 self._pending.setdefault(owner, {})[payload["process_id"]] = payload
             listener = self._listeners.get(owner)
-        if listener is None or listener[0].is_closed():
+            if listener is not None and listener[0].is_closed():
+                self._listeners.pop(owner, None)
+                listener = None
+            elif kind == "completed":
+                # The sink is captured below; drop it if this was the last use.
+                self._drop_idle_listener(owner)
+        if listener is None:
             return
         loop, emit, bound_context = listener
         process_id = payload["process_id"]
@@ -284,6 +335,7 @@ class ProcessTools:
             self._pending.clear()
             self._observed.clear()
             self._listeners.clear()
+            self._steps.clear()
             self._output_inflight.clear()
         return result
 

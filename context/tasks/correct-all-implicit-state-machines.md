@@ -186,6 +186,10 @@ on its own.
   process id reports `process_result_expired` instead of running the command
   again. `test_process_runtime_cleanup_stops_and_removes_managed_processes`
   now expects that instead of `unknown_process_id`.
+- SM-25: cancelling a process tool waits at most 10 seconds
+  (`PROCESS_CANCEL_GRACE_SECONDS`) for its worker to stop the process, then
+  returns the cancellation and logs a warning. The worker keeps running and
+  still owns cleanup; only the caller stops waiting.
 
 ## Item format
 
@@ -469,12 +473,13 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     reaped pid. `cleanup` holds the lock across blocking stops and drops
     receipts. Lookups race with `_retire`.
   - State: (done, 2026-11-15) the completion reason has one writer rule: `ManagedProcess.claim_completion_reason` sets it under the record's lock only while the process runs and nothing has claimed it, so a stop's `cancelled` is no longer overwritten by a deadline that fires during the stop. `_signal` no longer sends to the group of a reaped shell whose pid is in use again. `cleanup` collects the records under the lock, stops them without it, then retires each one (a record whose receipt cannot be written is kept, so its id cannot be rerun). A retired record is marked, and a poll that finds it retired answers from the receipt, so a request and its retry get the same answer.
-- [ ] **SM-25 Process completion notice and idempotent start** (c)
+- [x] **SM-25 Process completion notice and idempotent start** (c)
   - `penguin/tools/process_tools.py:47-267`,
     `penguin/tools/async_dispatch.py:187-204`
   - Exactly-once delivery depends on the consumer acknowledging. Listeners
     are never unbound. The cancel wait is unbounded.
   - Blocked by: SM-24
+  - State: (done, 2026-11-15) a completion notice is claimed, not peeked: `ProcessTools.take_pending` hands each notice out once under the lock, and `prepare_process_step` returns any it could not persist with `restore_pending`, so two steps for one session cannot both persist it and a failed persist is retried. A listener now has a lifetime: `bind` counts a step, `release` (called by `process_session_scope` when the step ends) drops the listener unless the owner still has a running process, and a completion event drops it once nothing can emit to it; a listener on a closed loop is dropped. The cancel wait is bounded (decision recorded).
 - [ ] **SM-26 Durable chat-request receipt** (c)
   - `penguin/web/services/chat_requests.py:36,85-347`,
     `penguin/web/services/a2a.py:74-248`, `penguin/web/app.py:211`
@@ -799,3 +804,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-15: fixed (2026-11-14). `pytest -q tests/test_engine_loop_termination.py`: 14 passed, 10 red before the fix; `PENGUIN_TEST_BEND=1 pytest -q tests/integrations/test_bend_loop_termination.py`: 5 passed (laws, 4096 + 729 sequences against Python, two mutations rejected); engine, core-runtime, A2A, task, agent, web and API suites: 158 files pass apart from the known `test_resolve_request_runtime_uses_runtime_helper` baseline failure.
 - SM-22: fixed (2026-11-15). `pytest -q tests/system/test_checkpoint_lifecycle.py`: 7 passed, all 7 red before the fix; `tests/system`, checkpoint, conversation, phase-1, CLI-integration and package-export tests: 29 files, 230 passed.
 - SM-24: fixed (2026-11-15). `pytest -q tests/tools/test_process_runtime_races.py`: 6 passed, 5 red before the fix (the sixth guards that children outliving their shell are still killed); 3 runs stable. All 40 test files that use the process runtime or tools: 565 passed.
+- SM-25: fixed (2026-11-15). `pytest -q tests/tools/test_process_notice_delivery.py`: 5 passed, 4 red before the fix (the fifth guards that a failed persist is retried). Process, engine and ACP suites: 69 files, 757 passed.
