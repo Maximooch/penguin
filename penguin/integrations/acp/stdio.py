@@ -79,7 +79,13 @@ class ProtocolTransport:
             )
             await self.writer.drain()
         request_id = message.get("id")
-        if type(request_id) in (str, int) and request_id in self.session_responses:
+        # Only a response answers a client request; the agent's own requests
+        # carry ids from a separate counter and may reuse the same value.
+        if (
+            "method" not in message
+            and type(request_id) in (str, int)
+            and request_id in self.session_responses
+        ):
             self.session_responses.discard(request_id)
             result = message.get("result")
             if isinstance(result, dict) and self.after_session_response is not None:
