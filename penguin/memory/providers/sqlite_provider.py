@@ -163,8 +163,13 @@ class SQLiteMemoryProvider(MemoryProvider):
             self._stats['total_memories'] = self._get_total_count()
             
             logger.info(f"SQLite memory provider initialized at {self.db_path}")
-            
+
         except Exception as e:
+            # A half-initialised connection would accept writes without the
+            # full-text index; drop it so the provider is plainly unusable.
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
             raise MemoryProviderError(f"Failed to initialize SQLite provider: {str(e)}")
     
     async def add_memory(

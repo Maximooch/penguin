@@ -7697,35 +7697,22 @@ async def orchestration_health(core: PenguinCore = Depends(get_core)):
 # ============================================================================
 # Memory System API Endpoints
 # ============================================================================
+async def _require_memory_provider(core: PenguinCore) -> Any:
+    """Return the tool manager's memory provider, initialising it on first use."""
+    provider = await core.tool_manager.ensure_memory_provider()
+    if provider is None:
+        raise HTTPException(status_code=503, detail="Memory system is not available")
+    return provider
+
+
 @router.post("/api/v1/memory/store")
 async def store_memory(
     request: MemoryStoreRequest, core: PenguinCore = Depends(get_core)
 ):
     """Store a new memory entry."""
     try:
-        # Use the ToolManager's memory functionality
-        tool_manager = core.tool_manager
-
-        # Check if memory provider is available
-        if (
-            not hasattr(tool_manager, "_memory_provider")
-            or tool_manager._memory_provider is None
-        ):
-            # Initialize memory provider
-            from penguin.memory.providers.factory import MemoryProviderFactory
-
-            memory_config = (
-                tool_manager.config.get("memory", {})
-                if hasattr(tool_manager.config, "get")
-                else {}
-            )
-            tool_manager._memory_provider = MemoryProviderFactory.create_provider(
-                memory_config
-            )
-            await tool_manager._memory_provider.initialize()
-
-        # Store the memory
-        memory_id = await tool_manager._memory_provider.add_memory(
+        provider = await _require_memory_provider(core)
+        memory_id = await provider.add_memory(
             content=request.content,
             metadata=request.metadata,
             categories=request.categories,
@@ -7737,6 +7724,8 @@ async def store_memory(
             "message": "Memory stored successfully",
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error storing memory: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -7786,19 +7775,27 @@ async def search_memory(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Declared before /memory/{memory_id}, which would otherwise match "stats".
+@router.get("/api/v1/memory/stats")
+async def get_memory_stats(core: PenguinCore = Depends(get_core)):
+    """Get memory system statistics."""
+    try:
+        provider = await core.tool_manager.ensure_memory_provider()
+        if provider is None:
+            return {"total_memories": 0, "status": "not_initialized"}
+        return await provider.get_memory_stats()
+
+    except Exception as e:
+        logger.error(f"Error getting memory stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/v1/memory/{memory_id}")
 async def get_memory(memory_id: str, core: PenguinCore = Depends(get_core)):
     """Get a specific memory by ID."""
     try:
-        # Access memory provider
-        tool_manager = core.tool_manager
-        if (
-            not hasattr(tool_manager, "_memory_provider")
-            or tool_manager._memory_provider is None
-        ):
-            raise HTTPException(status_code=500, detail="Memory system not initialized")
-
-        memory = await tool_manager._memory_provider.get_memory(memory_id)
+        provider = await _require_memory_provider(core)
+        memory = await provider.get_memory(memory_id)
         if not memory:
             raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")
 
@@ -7808,25 +7805,6 @@ async def get_memory(memory_id: str, core: PenguinCore = Depends(get_core)):
         raise
     except Exception as e:
         logger.error(f"Error retrieving memory: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/api/v1/memory/stats")
-async def get_memory_stats(core: PenguinCore = Depends(get_core)):
-    """Get memory system statistics."""
-    try:
-        tool_manager = core.tool_manager
-        if (
-            not hasattr(tool_manager, "_memory_provider")
-            or tool_manager._memory_provider is None
-        ):
-            return {"total_memories": 0, "status": "not_initialized"}
-
-        stats = await tool_manager._memory_provider.get_memory_stats()
-        return stats
-
-    except Exception as e:
-        logger.error(f"Error getting memory stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
