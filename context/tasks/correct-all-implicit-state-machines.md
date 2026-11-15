@@ -505,9 +505,10 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     reply early. The socket is not read during processing. Handlers have no
     session filter.
   - State: (done, 2026-11-15) each message on `/api/v1/chat/stream` gets its own queue, and its stream callback is bound to that queue when created, so a chunk a previous reply emits late is dropped instead of opening (or ending) the next reply. The socket is read while a message is processed: a disconnect cancels the processing; a new message is kept and handled next. The tool-event handler forwards only events of the request's session. Not changed: `core.notify_progress` has no callers, and it would call the route's async progress callback without awaiting it, so WebSocket progress events are never sent; left for a later item.
-- [ ] **SM-28 SSE connection and ledger batch** (c)
+- [x] **SM-28 SSE connection and ledger batch** (c)
   - `penguin/web/sse_events.py:124-461`
   - A full queue drops events silently. The batch is not flushed at shutdown.
+  - State: (done, 2026-11-15) a full live queue no longer drops events silently: the connection is marked lagging, stops queueing live events (the ledger already holds them), and once its queue drains the generator replays everything after its last delivered event from the ledger, then replays once more for events emitted during the first replay before resuming live delivery. The reconnect replay and this catch-up share one `replay_after`. The web app's lifespan flushes the pending ledger batch last at shutdown (`flush_runtime_event_ledger`).
 - [x] **SM-29 In-process code execution** (c)
   - `penguin/tools/tool_manager.py:342,4967-5024`
   - A timed-out execution keeps running and keeps the lock, so later calls
@@ -821,3 +822,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-25: fixed (2026-11-15). `pytest -q tests/tools/test_process_notice_delivery.py`: 5 passed, 4 red before the fix (the fifth guards that a failed persist is retried). Process, engine and ACP suites: 69 files, 757 passed.
 - SM-26: partly fixed (2026-11-15). `pytest -q tests/web/test_chat_request_lifecycle.py`: 3 passed, all 3 red before the fix; every test file using the receipt store, A2A, task cancellation or the app lifespan: 12 files, 186 passed.
 - SM-27: fixed (2026-11-15). `pytest -q tests/web/test_chat_stream_websocket.py`: 4 passed, 3 red before the fix (the fourth guards that a message sent mid-reply is answered next); `tests/web`, `tests/api` (without the auth-hardening file that hangs on main) and the web-route files: 61 files, 506 passed.
+- SM-28: fixed (2026-11-15). `pytest -q tests/api/test_sse_lag_recovery.py`: 2 passed, both red before the fix; 3 runs stable. Every SSE, ledger and app-lifespan test file: 29 files, 467 passed.

@@ -246,6 +246,10 @@ def create_app() -> "FastAPI":
                 await shutdown_agents()
         except Exception:
             logger.warning("Unable to stop background agents", exc_info=True)
+        # Last, so events emitted while shutting down are kept for replay.
+        from .sse_events import flush_runtime_event_ledger
+
+        await flush_runtime_event_ledger(core)
         try:
             pool = ConnectionPoolManager.get_instance()
             await pool.close_all()

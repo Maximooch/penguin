@@ -130,10 +130,17 @@ async def events_sse(
         delivered_event_ids: set[str] = set()
         delivered_event_order: deque[str] = deque()
         event_order = 0
+        # Set when the live queue overflows. Live events are then left to the
+        # ledger, and once the queue drains the generator replays everything
+        # after the last delivered event, so a slow client misses nothing.
+        lagging = False
+        last_delivered_id: str | None = None
 
         def mark_delivered(event_id: object) -> None:
+            nonlocal last_delivered_id
             if not isinstance(event_id, str) or not event_id:
                 return
+            last_delivered_id = event_id
             if event_id in delivered_event_ids:
                 return
             delivered_event_ids.add(event_id)
@@ -241,9 +248,12 @@ async def events_sse(
 
         def event_handler(event_type: str, data: Any):
             """Handler for EventBus events."""
+            nonlocal lagging
             # Only handle opencode_event type
             if event_type != "opencode_event":
                 return
+            if lagging:
+                return  # The ledger has it; the generator replays it.
 
             # Data should already be in OpenCode format
             if not isinstance(data, dict):
@@ -266,10 +276,76 @@ async def events_sse(
                 if isinstance(event_id, str):
                     queued_live_event_ids.add(event_id)
             except asyncio.QueueFull:
-                # Drop only this live delivery. The runtime event ledger already
-                # recorded the event at emission time, so reconnect/replay remains
-                # authoritative for slow clients.
-                pass
+                # The client is behind. The runtime event ledger recorded this
+                # event at emission time; stop queueing and let the generator
+                # replay from the ledger once the queue drains.
+                lagging = True
+
+        async def replay_after(cursor: str) -> AsyncIterator[str]:
+            """Yield ledger events after ``cursor`` that this client may see."""
+            # Ledger writes are batched off the delivery path; drain any
+            # pending batch so replay reads the freshest events.
+            await _flush_ledger_batch(core)
+            while True:
+                replay = await asyncio.to_thread(
+                    _replay_events_after,
+                    core,
+                    cursor,
+                    limit=_SSE_REPLAY_PAGE_SIZE,
+                    session_id=effective_session_id,
+                    agent_id=effective_agent_id,
+                    directory=effective_directory,
+                )
+                if not replay.found:
+                    gap_event = next_event(
+                        _replay_gap_event(
+                            cursor,
+                            oldest_event_id=replay.oldest_event_id,
+                            newest_event_id=replay.newest_event_id,
+                        )
+                    )
+                    if gap_event and event_allowed(gap_event):
+                        yield sse_event_frame(gap_event)
+                    return
+                if not replay.events:
+                    return
+                for runtime_event in replay.events:
+                    event = opencode_payload_from_runtime_event(runtime_event)
+                    event_id = event.get("id")
+                    if isinstance(event_id, str) and (
+                        event_id in queued_live_event_ids
+                        or event_id in delivered_event_ids
+                    ):
+                        continue
+                    if event_allowed(event):
+                        if isinstance(event_id, str):
+                            mark_delivered(event_id)
+                        yield sse_event_frame(event)
+                next_cursor = replay.events[-1].get("id")
+                if (
+                    len(replay.events) < _SSE_REPLAY_PAGE_SIZE
+                    or not isinstance(next_cursor, str)
+                ):
+                    return
+                cursor = next_cursor
+
+        async def catch_up() -> AsyncIterator[str]:
+            """Replay what a lagging client missed, then resume live delivery."""
+            nonlocal lagging
+            cursor = last_delivered_id or effective_last_event_id
+            if cursor is None:
+                lagging = False
+                gap_event = next_event(_replay_gap_event(""))
+                if gap_event and event_allowed(gap_event):
+                    yield sse_event_frame(gap_event)
+                return
+            async for frame in replay_after(cursor):
+                yield frame
+            # Resume live queueing, then replay once more for events emitted
+            # while the first replay ran; ids already queued live are skipped.
+            lagging = False
+            async for frame in replay_after(last_delivered_id or cursor):
+                yield frame
 
         # Subscribe to events
         core.event_bus.subscribe("opencode_event", event_handler)
@@ -289,56 +365,16 @@ async def events_sse(
                 yield sse_event_frame(normalized_connected)
 
             if effective_last_event_id:
-                # Ledger writes are batched off the delivery path; drain any
-                # pending batch so reconnect replay reads the freshest events.
-                await _flush_ledger_batch(core)
-                replay_cursor = effective_last_event_id
-                while True:
-                    replay = await asyncio.to_thread(
-                        _replay_events_after,
-                        core,
-                        replay_cursor,
-                        limit=_SSE_REPLAY_PAGE_SIZE,
-                        session_id=effective_session_id,
-                        agent_id=effective_agent_id,
-                        directory=effective_directory,
-                    )
-                    if not replay.found:
-                        gap_event = next_event(
-                            _replay_gap_event(
-                                replay_cursor,
-                                oldest_event_id=replay.oldest_event_id,
-                                newest_event_id=replay.newest_event_id,
-                            )
-                        )
-                        if gap_event and event_allowed(gap_event):
-                            yield sse_event_frame(gap_event)
-                        break
-                    if not replay.events:
-                        break
-                    for runtime_event in replay.events:
-                        event = opencode_payload_from_runtime_event(runtime_event)
-                        event_id = event.get("id")
-                        if (
-                            isinstance(event_id, str)
-                            and event_id in queued_live_event_ids
-                        ):
-                            continue
-                        if event_allowed(event):
-                            if isinstance(event_id, str):
-                                mark_delivered(event_id)
-                            yield sse_event_frame(event)
-                    next_cursor = replay.events[-1].get("id")
-                    if (
-                        len(replay.events) < _SSE_REPLAY_PAGE_SIZE
-                        or not isinstance(next_cursor, str)
-                    ):
-                        break
-                    replay_cursor = next_cursor
+                async for frame in replay_after(effective_last_event_id):
+                    yield frame
 
             # Stream events
             last_ledger_flush = time.monotonic()
             while True:
+                if lagging and queue.empty():
+                    async for frame in catch_up():
+                        yield frame
+                    continue
                 try:
                     # Wait for event with timeout for keepalive
                     event = await asyncio.wait_for(
@@ -386,6 +422,11 @@ async def events_sse(
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         },
     )
+
+
+async def flush_runtime_event_ledger(core: Any) -> None:
+    """Persist events still waiting in the ledger batch; call at shutdown."""
+    await _flush_ledger_batch(core)
 
 
 async def _flush_ledger_batch(core: Any) -> None:
