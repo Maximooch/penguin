@@ -202,6 +202,14 @@ on its own.
   message sent while a reply is still streaming is answered after it, in
   order. Tool events are forwarded only for the request's own session; a
   request that sends no session id still receives every event, as before.
+- SM-38: when the wallet guard stops a run that is not making progress, the
+  status now says why, in both modes: `repeated_response`,
+  `tool_result_echo` or `empty_responses`. Before, response mode reported
+  `completed` and task mode `implicit_completion`. Session goals treat these
+  like other unknown statuses (`blocked`), as they already treat the
+  tool-only stall statuses, so a stuck goal waits for the user instead of
+  continuing on its own. A run that ends with a plain answer keeps
+  `completed` or `implicit_completion`.
 
 ## Item format
 
@@ -543,7 +551,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - State: confirmed and fixed: the override snapshot now records which config it changed, and the restore uses that. The WebSocket path applies its override outside its `try/finally`; not changed.
 - [x] **SM-37 Model switch propagation** (b): `penguin/core_runtime/model_runtime.py:107-375`; multi-step, non-atomic, failures downgraded to warnings.
   - State: (done, 2026-11-15) a model switch is all or nothing: `apply_new_model_config` builds and prepares the new API client first and only then switches the core, conversation manager, context window and engine together; if the client cannot be built (missing credential, unknown provider) the error reaches `load_model_for_core`, which reports failure with nothing changed. Before, the core already named the new model while requests still went to the old client. `refresh_api_client` and the switch share one wiring helper; the try/except-and-warn wrappers around plain attribute assignments are gone.
-- [ ] **SM-38 Stall / empty / repeat guard** (a) [bend]: `penguin/engine.py:304-418,1376-1602`; counters reset in four places; recovery never re-arms; a kill in response mode looks like `completed`. Blocked by SM-15.
+- [x] **SM-38 Stall / empty / repeat guard** (a) [bend]: `penguin/engine.py:304-418,1376-1602`; counters reset in four places; recovery never re-arms; a kill in response mode looks like `completed`. Blocked by SM-15.
+  - State: (partial, 2026-11-15) fixed: a guard stop is no longer reported as a finished run; it carries its reason (`repeated_response`, `tool_result_echo`, `empty_responses`) in both modes, and a plain answer still ends with the default status. Needs Maximus: "recovery never re-arms" is what the human-owned law `recovery_at_most_once` in `prototypes/bend_loop_recovery/LAWS.bend` requires; re-arming after progress would need that law changed (and a cap on recoveries per run, or alternating stall and progress never ends). Not done: the guard's counters still reset in four places (each guard resets its own counter on progress); folding them into one pure decision, which the Bend lane would model, is left for a later pass.
 - [ ] **SM-39 Per-session stream state dict** (c): `penguin/core_runtime/stream_events.py:68-85,448,1247-1349`; `active` with no message id exists across an await; adapter map entries leak. Blocked by SM-16.
 - [ ] **SM-40 Session-goal run claim** (c): `penguin/core_runtime/session_goal_runtime.py:741-1079`; gate checked at 844 and acquired at 883; orphan test assumes one process per workspace.
 - [ ] **SM-41 RunMode singleton lifecycle** (b): `penguin/core_runtime/runmode_lifecycle.py:29-92`; no re-entrancy guard.
@@ -827,3 +836,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-28: fixed (2026-11-15). `pytest -q tests/api/test_sse_lag_recovery.py`: 2 passed, both red before the fix; 3 runs stable. Every SSE, ledger and app-lifespan test file: 29 files, 467 passed.
 - SM-35: on hold (2026-11-15); see its State.
 - SM-37: fixed (2026-11-15). `pytest -q tests/test_model_switch_atomic.py`: 2 passed, the failed-switch test red before the fix; model runtime, facade, provider-resolution and route model tests: 9 files pass apart from the known `test_resolve_request_runtime_uses_runtime_helper` baseline failure.
+- SM-38: partly fixed (2026-11-15). `pytest -q tests/test_engine_loop_termination.py`: 18 passed, the 4 new guard-stop cases red before the fix; engine, run-mode, goal and engine-caller test files: 35 files, 385 passed.

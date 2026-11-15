@@ -180,3 +180,34 @@ async def test_a_cancelled_run_saves_what_it_already_did(mode: str) -> None:
 
     assert saved_lengths, "a cancelled run did not save the conversation"
     assert saved_lengths[-1] == len(conversation.session.messages)
+
+
+def _tool_turn(text: str, index: int) -> dict[str, Any]:
+    return {
+        "assistant_response": text,
+        "action_results": [
+            {"action": "read_file", "status": "completed", "result": f"r{index}"}
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_a_guard_stop_is_not_reported_as_a_finished_run(mode: str) -> None:
+    turns = [_tool_turn("Checking the file again.", index) for index in range(3)]
+    engine = _ScriptedTaskEngine(turns)
+
+    result = await _run(engine, mode)
+
+    assert engine.provider_calls == 3
+    assert result["status"] == "repeated_response"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_echoed_tool_results_stop_with_their_own_status(mode: str) -> None:
+    engine = _ScriptedTaskEngine([_tool_turn("[Tool Result] r0", 0)])
+
+    result = await _run(engine, mode)
+
+    assert result["status"] == "tool_result_echo"

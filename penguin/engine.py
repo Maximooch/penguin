@@ -1437,7 +1437,9 @@ class Engine:
         Returns:
             Tuple of (should_break, completion_status)
             - should_break: True if loop should terminate
-            - completion_status: Status string if breaking, None otherwise
+            - completion_status: None when the model answered and the run ends
+              normally (the loop then uses its default status); otherwise why
+              the guard stopped a run that was not making progress
         """
         if (last_response or "").strip() == _EMPTY_RESPONSE_PLACEHOLDER:
             last_response = ""
@@ -1461,7 +1463,7 @@ class Engine:
         # Check for no-action completion (models that don't use CodeAct format)
         if not iteration_results and last_response:
             if not codeact_enabled:
-                return True, "implicit_completion" if mode == "task" else None
+                return True, None
             has_action_tags = bool(
                 re.search(r"<\w+>.*?</\w+>", last_response, re.DOTALL)
             )
@@ -1469,7 +1471,7 @@ class Engine:
                 logger.debug(
                     f"[WALLET_GUARD] No actions in {mode} response, treating as complete (model may not support CodeAct)"
                 )
-                return True, "implicit_completion" if mode == "task" else None
+                return True, None
 
         # Tool-only turns are valid for providers like OpenAI/Codex. Treat an
         # empty assistant transcript as in-progress work rather than a loop.
@@ -1484,14 +1486,14 @@ class Engine:
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: model is echoing tool results as text"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "tool_result_echo"
 
         # Check for repeated/looping responses
         if loop_state.check_repeated(last_response):
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: response repeated {loop_state.repeat_count} times"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "repeated_response"
 
         # Check for empty/trivial responses
         # Tool-bearing turns with assistant text still reset the trivial counter.
@@ -1523,7 +1525,7 @@ class Engine:
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: {loop_state.empty_response_count} consecutive trivial responses"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "empty_responses"
 
         return False, None
 
