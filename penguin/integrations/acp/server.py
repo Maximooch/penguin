@@ -101,6 +101,12 @@ class Session:
     filesystem: str = "local"
     terminal: bool = False
     shell: str = DEFAULT_SHELL
+    closing: bool = False
+
+    @property
+    def busy(self) -> bool:
+        """A turn is running or queued, or the session is being closed."""
+        return self.task is not None or self.closing
 
 
 class PenguinACPAgent:
@@ -351,7 +357,7 @@ class PenguinACPAgent:
 
     def _idle_session(self, sid: str) -> Session:
         session = self.sessions.get(sid)
-        if session is None or session.task is not None:
+        if session is None or session.busy:
             raise RequestError.invalid_request({"reason": "Session is missing or busy"})
         return session
 
@@ -593,18 +599,26 @@ class PenguinACPAgent:
         session = self.sessions.get(session_id)
         if session is None:
             raise RequestError.invalid_params({"reason": "Session is not open"})
-        task = session.task
-        if task is not None:
-            await self.cancel(session_id)
-            await asyncio.shield(task)
-        await self._children.close_root(session_id)
-        if session.mcp_provider is not None:
-            await asyncio.to_thread(session.mcp_provider.close)
-        self.sessions.pop(session_id, None)
-        self._grants.close(session_id)
-        for child_id, child in self._children.children.items():
-            if child.root == session_id:
-                self._grants.close(child_id)
+        if session.closing:
+            raise RequestError.invalid_request({"reason": "Session is closing"})
+        # Marked before the first await: prompt and load refuse a closing
+        # session, so nothing else can start on it or replace it meanwhile.
+        session.closing = True
+        try:
+            task = session.task
+            if task is not None:
+                await self.cancel(session_id)
+                await asyncio.shield(task)
+            await self._children.close_root(session_id)
+            if session.mcp_provider is not None:
+                await asyncio.to_thread(session.mcp_provider.close)
+        finally:
+            if self.sessions.get(session_id) is session:
+                self.sessions.pop(session_id)
+            self._grants.close(session_id)
+            for child_id, child in self._children.children.items():
+                if child.root == session_id:
+                    self._grants.close(child_id)
         return CloseSessionResponse()
 
     async def delete_session(self, session_id: str) -> DeleteSessionResponse:
@@ -612,14 +626,14 @@ class PenguinACPAgent:
         if not self._registry.available:
             raise RequestError.method_not_found("session/delete")
         active = self.sessions.get(session_id)
-        if active and active.task is not None:
+        if active and active.busy:
             raise RequestError.invalid_request({"reason": "Session is busy"})
         async with self._process_gate:
             session = self._registry.get(session_id)
             if session is None or self._registry.cwd(session) is None:
                 raise RequestError.invalid_params({"reason": "Unknown owned session"})
             active = self.sessions.get(session_id)
-            if (active and active.task is not None) or any(
+            if (active and active.busy) or any(
                 child.root == session_id and child.active
                 for child in self._children.children.values()
             ):
@@ -684,7 +698,7 @@ class PenguinACPAgent:
         if self._connection is None:
             raise RequestError.internal_error()
         active = self.sessions.get(session_id)
-        if active and active.task is not None:
+        if active and active.busy:
             raise RequestError.invalid_request({"reason": "Session is busy"})
         async with self._process_gate:
             saved = self._registry.get(session_id)
@@ -742,8 +756,13 @@ class PenguinACPAgent:
                 else (None, None)
             )
             provider = await self._new_mcp_provider(mcp_servers, owned_cwd)
-            if active and active.mcp_provider is not None:
-                await asyncio.to_thread(active.mcp_provider.close)
+            # Re-check now: a prompt or close may have started on the session
+            # while this load waited for the gate or the steps above.
+            current = self.sessions.get(session_id)
+            if current is not active or (current is not None and current.busy):
+                if provider is not None:
+                    await asyncio.to_thread(provider.close)
+                raise RequestError.invalid_request({"reason": "Session is busy"})
             self.sessions[session_id] = Session(
                 cwd=owned_cwd,
                 roots=roots,
@@ -756,6 +775,8 @@ class PenguinACPAgent:
                 terminal=terminal,
                 shell=shell,
             )
+            if active and active.mcp_provider is not None:
+                await asyncio.to_thread(active.mcp_provider.close)
             saved.metadata["acp_additional_directories"] = [
                 str(root) for root in roots[1:]
             ]
@@ -836,6 +857,8 @@ class PenguinACPAgent:
             raise RequestError.invalid_request(
                 {"reason": "Client terminal is unavailable"}
             )
+        if session.closing:
+            raise RequestError.invalid_request({"reason": "Session is closing"})
         if session.task is not None:
             raise RequestError.invalid_request(
                 {"reason": "A turn is already active for this session"}
