@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import logging
 import re
 import threading
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping
+from typing import Any, Callable, Mapping, MutableMapping
+
+logger = logging.getLogger(__name__)
 
 RUNTIME_EVENT_SCHEMA_VERSION = "penguin.runtime_event.v1"
 
@@ -55,12 +58,30 @@ _SECRET_KEY_SEGMENTS = {
 }
 _SEQUENCE_LOCK = threading.Lock()
 _SEQUENCE_COUNTERS: dict[str, itertools.count[int]] = {}
+# The highest sequence a stream already has in durable storage. A stream's
+# counter starts after it, so ids stay unique across restarts.
+_SEQUENCE_FLOOR: Callable[[str], int] | None = None
 
 
 def reset_runtime_event_sequences() -> None:
-    """Reset per-stream counters for deterministic tests."""
+    """Reset per-stream counters and the sequence floor for deterministic tests."""
+    global _SEQUENCE_FLOOR
     with _SEQUENCE_LOCK:
         _SEQUENCE_COUNTERS.clear()
+        _SEQUENCE_FLOOR = None
+
+
+def set_runtime_event_sequence_floor(floor: Callable[[str], int] | None) -> None:
+    """Set where a stream's sequence starts in this process.
+
+    Args:
+        floor: Returns the highest sequence already stored for a stream id, or
+            ``None`` to start every new stream at 1. Streams that already have
+            a counter in this process are not affected.
+    """
+    global _SEQUENCE_FLOOR
+    with _SEQUENCE_LOCK:
+        _SEQUENCE_FLOOR = floor
 
 
 def event_category(event_type: str, payload: Mapping[str, Any] | None = None) -> str:
@@ -621,9 +642,24 @@ def _next_sequence(stream_id: str) -> int:
     with _SEQUENCE_LOCK:
         counter = _SEQUENCE_COUNTERS.get(stream_id)
         if counter is None:
-            counter = itertools.count(1)
+            counter = itertools.count(_first_sequence(stream_id))
             _SEQUENCE_COUNTERS[stream_id] = counter
         return next(counter)
+
+
+def _first_sequence(stream_id: str) -> int:
+    """Return the first sequence for a stream new to this process."""
+    if _SEQUENCE_FLOOR is None:
+        return 1
+    try:
+        return max(0, int(_SEQUENCE_FLOOR(stream_id))) + 1
+    except Exception:
+        logger.warning(
+            "Could not read the stored sequence for %s; starting at 1",
+            stream_id,
+            exc_info=True,
+        )
+        return 1
 
 
 def _slug(value: str) -> str:
@@ -656,5 +692,6 @@ __all__ = [
     "redact_runtime_payload",
     "reset_runtime_event_sequences",
     "runtime_event_from_opencode",
+    "set_runtime_event_sequence_floor",
     "wrap_opencode_event",
 ]

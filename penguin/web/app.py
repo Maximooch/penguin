@@ -19,6 +19,7 @@ from penguin.core_runtime import startup as core_startup
 from penguin.run_mode import RunMode
 from penguin.llm.api_client import APIClient, ConnectionPoolManager
 from penguin.llm.model_config import ModelConfig
+from penguin.system.runtime_event_ledger import get_runtime_event_ledger
 from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
@@ -67,6 +68,9 @@ def get_or_create_core() -> PenguinCore:
     global _core_instance
 
     if _core_instance is None:
+        # Open the event ledger first, so events emitted while the core starts
+        # continue each stream's stored sequence instead of reusing old ids.
+        get_runtime_event_ledger()
         _core_instance = _create_core()
 
     return _core_instance

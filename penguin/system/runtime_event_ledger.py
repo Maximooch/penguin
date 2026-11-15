@@ -21,6 +21,7 @@ from penguin.config import WORKSPACE_PATH
 from penguin.system.runtime_events import (
     RUNTIME_EVENT_SCHEMA_VERSION,
     redact_runtime_payload,
+    set_runtime_event_sequence_floor,
 )
 
 DEFAULT_LEDGER_MAX_EVENTS = 100_000
@@ -120,17 +121,21 @@ def get_runtime_event_ledger(core: Any | None = None) -> RuntimeEventLedger:
         existing = getattr(core, _RUNTIME_EVENT_LEDGER_ATTR, None)
         if isinstance(existing, RuntimeEventLedger):
             return existing
-        ledger = RuntimeEventLedger(default_ledger_path(), policy=policy_from_env())
+        ledger = _open_ledger()
         setattr(core, _RUNTIME_EVENT_LEDGER_ATTR, ledger)
         return ledger
 
     global _PROCESS_LEDGER
     if _PROCESS_LEDGER is None:
-        _PROCESS_LEDGER = RuntimeEventLedger(
-            default_ledger_path(),
-            policy=policy_from_env(),
-        )
+        _PROCESS_LEDGER = _open_ledger()
     return _PROCESS_LEDGER
+
+
+def _open_ledger() -> RuntimeEventLedger:
+    """Open the ledger and continue each stream's sequence after what it holds."""
+    ledger = RuntimeEventLedger(default_ledger_path(), policy=policy_from_env())
+    set_runtime_event_sequence_floor(ledger.last_sequence)
+    return ledger
 
 
 class RuntimeEventLedger:
@@ -300,6 +305,27 @@ class RuntimeEventLedger:
                     (event_id,),
                 ).fetchone()
                 return row is not None
+            finally:
+                conn.close()
+
+    def last_sequence(self, stream_id: str) -> int:
+        """Return the highest retained sequence for a stream, or 0.
+
+        Args:
+            stream_id: RuntimeEvent stream id.
+
+        Returns:
+            The largest stored ``sequence`` for the stream, or 0 when none.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                self._ensure_schema(conn)
+                row = conn.execute(
+                    "SELECT MAX(sequence) FROM runtime_events WHERE stream_id = ?",
+                    (stream_id,),
+                ).fetchone()
+                return int(row[0] or 0) if row is not None else 0
             finally:
                 conn.close()
 
