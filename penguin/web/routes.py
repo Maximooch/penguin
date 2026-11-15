@@ -4439,8 +4439,11 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
     _setup_approval_websocket_callbacks()
     _setup_question_event_callbacks()
 
-    response_queue = asyncio.Queue()
     sender_task = None
+    # The pending read of the client's next message. While a message is being
+    # processed it doubles as the disconnect watch; a message it returns is
+    # handled on the next turn of the loop.
+    receive_task: asyncio.Task | None = None
 
     # Task to send messages from the queue to the client
     async def sender(queue: asyncio.Queue):
@@ -4555,15 +4558,21 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
     try:
         while True:  # Keep handling incoming client messages
             # Guard receive_json against client disconnect
+            if receive_task is None:
+                receive_task = asyncio.create_task(websocket.receive_json())
             try:
-                data = await websocket.receive_json()  # Wait for a request from client
+                data = await receive_task
             except (WebSocketDisconnect, RuntimeError) as e:
                 logger.info(f"Client disconnected during receive_json: {e}")
                 break  # Exit the loop cleanly
+            finally:
+                receive_task = None
 
             logger.info(f"Received request from client: {data.get('text', '')[:50]}...")
 
-            # Start a new sender task for this message
+            # Each message gets its own queue, so anything a previous reply
+            # emits late cannot reach (or end) this one.
+            response_queue: asyncio.Queue = asyncio.Queue()
             sender_task = asyncio.create_task(sender(response_queue))
             logger.info("Sender task started for this message.")
 
@@ -4716,7 +4725,9 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
 
                 # Register UI event handler for tool events and other UI updates
                 async def _stream_ui_event_handler(
-                    event_type: str, data: Dict[str, Any]
+                    event_type: str,
+                    data: Dict[str, Any],
+                    request_session: str | None = effective_session_id,
                 ):
                     # Skip if websocket is not connected
                     try:
@@ -4724,6 +4735,13 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                             return
                     except Exception:
                         return  # Can't check state, assume disconnected
+                    # The event bus is shared by every session; forward only
+                    # this request's session. A request without a session id
+                    # keeps receiving every event, as before.
+                    if request_session and (
+                        data.get("session_id") or data.get("conversation_id")
+                    ) != request_session:
+                        return
 
                     try:
                         if event_type == "tool":
@@ -4762,10 +4780,13 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
 
                 # Define a per-request callback that preserves message_type
                 async def per_request_stream_callback(
-                    chunk: str, message_type: str = "assistant"
+                    chunk: str,
+                    message_type: str = "assistant",
+                    *,
+                    queue: asyncio.Queue = response_queue,
                 ):
                     try:
-                        await response_queue.put(
+                        await queue.put(
                             {
                                 "token": chunk,
                                 "type": message_type,
@@ -4840,7 +4861,17 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                             )
                         )
 
-                    # Wait for the core process to finish
+                    # Keep reading the socket while the message is processed,
+                    # so a client that leaves stops the work it started.
+                    receive_task = asyncio.create_task(websocket.receive_json())
+                    await asyncio.wait(
+                        {process_task, receive_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if receive_task.done() and receive_task.exception() is not None:
+                        process_task.cancel()
+                        await asyncio.gather(process_task, return_exceptions=True)
+                        raise WebSocketDisconnect(code=1001)
                     process_result = await process_task
                 finally:
                     _restore_reasoning_variant_override(
@@ -5033,6 +5064,8 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
         logger.error(f"Unhandled error in websocket handler: {str(e)}", exc_info=True)
     finally:
         logger.info("Cleaning up stream_chat handler.")
+        if receive_task is not None and not receive_task.done():
+            receive_task.cancel()
         # Ensure sender task is cancelled if connection closes unexpectedly
         if sender_task and not sender_task.done():
             logger.info("Cancelling sender task due to handler exit.")

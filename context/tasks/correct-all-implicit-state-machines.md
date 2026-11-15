@@ -197,6 +197,11 @@ on its own.
 - SM-26: the Link and A2A callers keep their own request fingerprints. They
   write to separate stores, so they never meet. A2A's narrower one ignores
   `link_execution` when a message id is reused.
+- SM-27: a `/api/v1/chat/stream` client that disconnects while its message
+  is processed now cancels that processing (it ran to the end before). A
+  message sent while a reply is still streaming is answered after it, in
+  order. Tool events are forwarded only for the request's own session; a
+  request that sends no session id still receives every event, as before.
 
 ## Item format
 
@@ -494,11 +499,12 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     caller. Shutdown neither awaits nor cancels in-flight tasks. The A2A
     repair mapper disagrees with the execute mapper.
   - State: (partial, 2026-11-15) fixed: shutdown now stops in-flight durable requests (`stop_chat_requests`, called from the web app's lifespan) so their receipts record a stopped result; the A2A executor and the receipt repair on lookup use one mapping, `settled_task_state`, so a stored `error` result no longer reads as completed after a restart and a stored `provider_error` no longer stays open. Kept as is: the two callers' fingerprints (separate stores; see decisions). Open, needs Maximus: a row whose owner process died without shutting down (a crash or SIGKILL) still stays accepted, so Link and A2A see `recovering` forever. The module docstring makes that deliberate (never replay possibly executed tools). The fix would record an owner heartbeat and report such a row as a final `interrupted` (not replayed) result once the heartbeat is stale, which changes what Link sees.
-- [ ] **SM-27 WebSocket chat stream** (c)
+- [x] **SM-27 WebSocket chat stream** (c)
   - `penguin/web/routes.py:4434-5047`
   - One queue is shared across messages, so a stale sentinel ends the next
     reply early. The socket is not read during processing. Handlers have no
     session filter.
+  - State: (done, 2026-11-15) each message on `/api/v1/chat/stream` gets its own queue, and its stream callback is bound to that queue when created, so a chunk a previous reply emits late is dropped instead of opening (or ending) the next reply. The socket is read while a message is processed: a disconnect cancels the processing; a new message is kept and handled next. The tool-event handler forwards only events of the request's session. Not changed: `core.notify_progress` has no callers, and it would call the route's async progress callback without awaiting it, so WebSocket progress events are never sent; left for a later item.
 - [ ] **SM-28 SSE connection and ledger batch** (c)
   - `penguin/web/sse_events.py:124-461`
   - A full queue drops events silently. The batch is not flushed at shutdown.
@@ -814,3 +820,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-24: fixed (2026-11-15). `pytest -q tests/tools/test_process_runtime_races.py`: 6 passed, 5 red before the fix (the sixth guards that children outliving their shell are still killed); 3 runs stable. All 40 test files that use the process runtime or tools: 565 passed.
 - SM-25: fixed (2026-11-15). `pytest -q tests/tools/test_process_notice_delivery.py`: 5 passed, 4 red before the fix (the fifth guards that a failed persist is retried). Process, engine and ACP suites: 69 files, 757 passed.
 - SM-26: partly fixed (2026-11-15). `pytest -q tests/web/test_chat_request_lifecycle.py`: 3 passed, all 3 red before the fix; every test file using the receipt store, A2A, task cancellation or the app lifespan: 12 files, 186 passed.
+- SM-27: fixed (2026-11-15). `pytest -q tests/web/test_chat_stream_websocket.py`: 4 passed, 3 red before the fix (the fourth guards that a message sent mid-reply is answered next); `tests/web`, `tests/api` (without the auth-hardening file that hangs on main) and the web-route files: 61 files, 506 passed.
