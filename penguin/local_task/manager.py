@@ -144,6 +144,8 @@ class Task:
         Returns:
             Whether the transition was successful
         """
+        if new_state == self.status:
+            return True
         try:
             valid_transitions = {
                 "active": ["completed", "cancelled", "failed", "pending_review", "archived"],
@@ -175,11 +177,9 @@ class Task:
             logger.warning(f"Invalid state transition for task {self.id}: {self.status} -> {new_state}")
             return False
         except Exception as e:
+            # Never set a state the table did not allow.
             logger.error(f"Error in transition_to: {e}")
-            # Still update state as a fallback
-            self.status = new_state
-            self.updated_at = datetime.now().isoformat()
-            return True
+            return False
         
     def start_execution(self, executor_id: str = "system", task_prompt: str = "") -> Optional[ExecutionRecord]:
         """
@@ -220,9 +220,7 @@ class Task:
         except Exception as e:
             logger.error(f"Error starting execution for task {self.id}: {e}")
             # Update basic task properties even on failure
-            if self.status != "active":
-                self.status = "active"
-                self.updated_at = datetime.now().isoformat()
+            self.transition_to("active")
             return None
     
     def get_current_execution(self) -> Optional[ExecutionRecord]:
@@ -284,11 +282,10 @@ class Task:
             logger.error(f"Error completing execution for task {self.id}: {e}")
             # Update basic task status even on failure
             if isinstance(result, ExecutionResult) and result == ExecutionResult.SUCCESS:
-                self.status = "completed"
-                self.progress = 100
+                if self.transition_to("completed"):
+                    self.progress = 100
             elif isinstance(result, ExecutionResult) and result == ExecutionResult.FAILURE:
-                self.status = "failed"
-            self.updated_at = datetime.now().isoformat()
+                self.transition_to("failed")
     
     def get_execution_metrics(self) -> Dict[str, Any]:
         """
@@ -519,10 +516,8 @@ class ProjectManager:
                 except Exception as e:
                     logger.warning(f"Error completing task execution: {e}")
                     # Still update task status even if execution recording fails
-                    if task.status != "completed":
-                        task.status = "completed"
+                    if task.status != "completed" and task.transition_to("completed"):
                         task.progress = 100
-                        task.updated_at = datetime.now().isoformat()
                         self._save_data()
             else:
                 logger.warning(f"Received completion event for unknown task ID: {task_id}")
@@ -557,9 +552,8 @@ class ProjectManager:
                 except Exception as e:
                     logger.warning(f"Error logging task failure: {e}")
                     # Still update task status even if execution recording fails
-                    task.status = "failed"
-                    task.updated_at = datetime.now().isoformat()
-                    self._save_data()
+                    if task.transition_to("failed"):
+                        self._save_data()
             else:
                 logger.warning(f"Received failure event for unknown task ID: {task_id}")
         except Exception as e:
@@ -784,8 +778,10 @@ class ProjectManager:
         """
         task = self._find_task_by_name(name)
         if task:
-            task.status = "completed"
-            task.updated_at = datetime.now().isoformat()
+            if not task.transition_to("completed"):
+                raise ValueError(
+                    f"Task '{name}' cannot be completed from {task.status}"
+                )
             if task.project_id:
                 self._save_data()
             else:
@@ -796,8 +792,7 @@ class ProjectManager:
         if project:
             # Mark all tasks in project as completed
             for task in project.tasks.values():
-                task.status = "completed"
-                task.updated_at = datetime.now().isoformat()
+                task.transition_to("completed")
             self._save_data()
             return
 
@@ -1637,9 +1632,13 @@ class ProjectManager:
                     "metadata": None,
                 }
 
-            # Update task state
-            task.status = "completed"
-            task.updated_at = datetime.now().isoformat()
+            # Update task state through the transition table
+            if not task.transition_to("completed"):
+                return {
+                    "status": "error",
+                    "result": f"Task '{name}' cannot be completed from {task.status}",
+                    "metadata": None,
+                }
 
             # Save changes
             if task.project_id:
