@@ -4133,11 +4133,8 @@ Welcome to Penguin!
                 # Increment conversation turn for new user input
                 self.current_conversation_turn += 1
                 # Reset streaming state
-                self.streaming_manager.set_streaming(False)
-                self.streaming_manager.streaming_buffer = ""
-                self.streaming_manager.streaming_reasoning_buffer = ""
+                self.streaming_manager.reset_stream_state()
                 self.streaming_manager.streaming_role = "assistant"
-                self.streaming_manager._active_stream_id = None
                 self.last_completed_message = ""
                 self.last_completed_message_normalized = ""
 

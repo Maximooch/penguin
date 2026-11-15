@@ -40,21 +40,22 @@ class StreamingManager:
         """
         self.is_streaming = streaming
 
+    def reset_stream_state(self) -> None:
+        """Forget the current stream: no stream id and empty buffers."""
+        self.is_streaming = False
+        self._active_stream_id = None
+        self.streaming_buffer = ""
+        self.streaming_reasoning_buffer = ""
+
     def finalize_streaming(self) -> None:
         """Finalize streaming session.
 
         Stops any active streaming display and resets buffers.
         """
         if self._active_stream_id is not None or self.is_streaming:
-            # Stop streaming display
             if self.streaming_display.is_active:
                 self.streaming_display.stop(finalize=True)
-
-            # Reset streaming state
-            self.is_streaming = False
-            self._active_stream_id = None
-            self.streaming_buffer = ""
-            self.streaming_reasoning_buffer = ""
+            self.reset_stream_state()
 
     def safely_stop_progress(self) -> None:
         """Safely stop any active progress displays.
@@ -71,13 +72,16 @@ class StreamingManager:
                 # Ignore errors when stopping progress
                 pass
 
-        # Also stop streaming display if active
+        # Also stop streaming display if active. The stream it was showing is
+        # abandoned, so forget it too; otherwise the next stream's chunks are
+        # ignored as belonging to a foreign stream.
         if self.streaming_display.is_active:
             try:
                 self.streaming_display.stop(finalize=False)
             except Exception:
                 # Ignore errors when stopping streaming
                 pass
+            self.reset_stream_state()
 
     def on_progress_update(self, data: dict) -> None:
         """Handle progress updates from Core.
