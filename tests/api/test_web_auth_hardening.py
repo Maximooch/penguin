@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -10,9 +11,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PIL import Image
 from fastapi import FastAPI, WebSocketException
 from fastapi.testclient import TestClient
+from PIL import Image
 from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
@@ -25,8 +26,8 @@ from penguin.web.middleware.auth import (
     require_websocket_auth,
 )
 from penguin.web.routes import ALLOWED_UPLOAD_CONTENT_TYPES, router
-from penguin.web.sse_events import router as sse_router, set_core_instance
 from penguin.web.services import provider_credentials as provider_credentials_service
+from penguin.web.sse_events import router as sse_router, set_core_instance
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +59,11 @@ def _loopback_client(
     app: FastAPI, base_url: str = "http://127.0.0.1:9000"
 ) -> TestClient:
     return TestClient(app, base_url=base_url, client=("127.0.0.1", 50000))
+
+
+def _basic_auth_header(username: str, password: str) -> str:
+    credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {credentials}"
 
 
 @pytest.fixture
@@ -125,6 +131,111 @@ def test_authenticate_connection_rejects_startup_token_from_non_loopback_client(
         authenticate_connection(connection, AuthConfig())
 
 
+def test_authenticate_connection_accepts_opencode_basic_api_key(
+    auth_config: AuthConfig,
+) -> None:
+    connection = SimpleNamespace(
+        client=SimpleNamespace(host="203.0.113.25"),
+        headers={"Authorization": _basic_auth_header("opencode", "test-key-123")},
+        query_params={},
+        url=SimpleNamespace(path="/api/session"),
+    )
+
+    result = authenticate_connection(connection, auth_config)
+
+    assert result["method"] == "api_key"
+    assert result["subject"] == "api_client"
+
+
+def test_authenticate_connection_accepts_opencode_basic_permission_bootstrap(
+    auth_config: AuthConfig,
+) -> None:
+    connection = SimpleNamespace(
+        client=SimpleNamespace(host="203.0.113.25"),
+        headers={"Authorization": _basic_auth_header("opencode", "test-key-123")},
+        query_params={},
+        url=SimpleNamespace(path="/api/permission/request"),
+    )
+
+    result = authenticate_connection(connection, auth_config)
+
+    assert result["method"] == "api_key"
+
+
+def test_authenticate_connection_accepts_opencode_basic_startup_token_on_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
+    connection = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1"),
+        headers={
+            "Authorization": _basic_auth_header(
+                "opencode",
+                "startup-token-123",
+            )
+        },
+        query_params={},
+        url=SimpleNamespace(path="/api/session"),
+    )
+
+    result = authenticate_connection(connection, AuthConfig())
+
+    assert result["method"] == "startup_token"
+    assert result["subject"] == "local_bootstrap"
+
+
+def test_authenticate_connection_rejects_opencode_basic_startup_token_remotely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
+    connection = SimpleNamespace(
+        client=SimpleNamespace(host="203.0.113.25"),
+        headers={
+            "Authorization": _basic_auth_header(
+                "opencode",
+                "startup-token-123",
+            )
+        },
+        query_params={},
+        url=SimpleNamespace(path="/api/session"),
+    )
+
+    with pytest.raises(AuthenticationError, match="No valid authentication"):
+        authenticate_connection(connection, AuthConfig())
+
+
+def test_authenticate_connection_rejects_non_opencode_basic_username(
+    auth_config: AuthConfig,
+) -> None:
+    connection = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1"),
+        headers={"Authorization": _basic_auth_header("penguin", "test-key-123")},
+        query_params={},
+        url=SimpleNamespace(path="/api/session"),
+    )
+
+    with pytest.raises(AuthenticationError, match="No valid authentication"):
+        authenticate_connection(connection, auth_config)
+
+
+@pytest.mark.parametrize("path", ["/api/v1/sessions", "/api/docs", "/dashboard"])
+def test_authenticate_connection_rejects_opencode_basic_outside_v2_routes(
+    auth_config: AuthConfig,
+    path: str,
+) -> None:
+    connection = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1"),
+        headers={"Authorization": _basic_auth_header("opencode", "test-key-123")},
+        query_params={},
+        url=SimpleNamespace(path=path),
+    )
+
+    with pytest.raises(AuthenticationError, match="No valid authentication"):
+        authenticate_connection(connection, auth_config)
+
+
 def test_build_session_cookie_settings_rejects_non_loopback_http_client() -> None:
     request = Request(
         {
@@ -143,7 +254,10 @@ def test_build_session_cookie_settings_rejects_non_loopback_http_client() -> Non
 
     with pytest.raises(
         AuthenticationError,
-        match="Browser session cookies are only issued for loopback hosts or HTTPS origins",
+        match=(
+            "Browser session cookies are only issued for loopback hosts or HTTPS "
+            "origins"
+        ),
     ):
         build_session_cookie_settings(request, AuthConfig())
 

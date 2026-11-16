@@ -1,0 +1,481 @@
+name: Publish OpenCode V2 TUI sidecars
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  OPENCODE_V2_VERSION: "0.0.0-next-17220"
+  OPENCODE_V2_UPSTREAM_COMMIT: "b35c5fc98577b77d8d67d298c6254e0cd138c9d5"
+  OPENCODE_V2_PUBLISH_RUN: "17220"
+  OPENCODE_V2_PUBLISHED_AT: "2026-08-11T21:25:30.838Z"
+  OPENCODE_V2_BUN_VERSION: "1.3.14"
+  OPENCODE_V2_WRAPPER_INTEGRITY: "sha512-Gy/CJAoYc+8xm1sgyb7XciWnwc0n7XjDYi01XQqtVH+wO0UAHW+T5FTH9Oh7usku0Cf4XflQieSurpgnMVg3sg=="
+  OPENCODE_V2_MUSL_TEST_IMAGE: "alpine:3.22.5@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce"
+
+jobs:
+  verify-upstream-package-map:
+    name: Verify immutable OpenCode V2 package map
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify wrapper and platform pins
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          spec="@opencode-ai/cli@${OPENCODE_V2_VERSION}"
+          mkdir -p .opencode2-wrapper/pack .opencode2-wrapper/extract
+          pushd .opencode2-wrapper/pack >/dev/null
+          registry_integrity="$(npm view "$spec" dist.integrity)"
+          published_at="$(npm view "$spec" "time[${OPENCODE_V2_VERSION}]")"
+          pack_json="$(npm pack "$spec" --ignore-scripts --json)"
+          tarball="$(node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync(0,"utf8"))[0]; process.stdout.write(p.filename)' <<<"$pack_json")"
+          packed_integrity="$(node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync(0,"utf8"))[0]; process.stdout.write(p.integrity)' <<<"$pack_json")"
+          test "$OPENCODE_V2_VERSION" = "0.0.0-next-${OPENCODE_V2_PUBLISH_RUN}"
+          test "$published_at" = "$OPENCODE_V2_PUBLISHED_AT"
+          test "$registry_integrity" = "$OPENCODE_V2_WRAPPER_INTEGRITY"
+          test "$packed_integrity" = "$OPENCODE_V2_WRAPPER_INTEGRITY"
+          tar -xzf "$tarball" -C ../extract
+          popd >/dev/null
+
+          WRAPPER_MANIFEST=.opencode2-wrapper/extract/package/package.json \
+            node <<'NODE'
+          const assert = require("node:assert/strict")
+          const manifest = require(`./${process.env.WRAPPER_MANIFEST}`)
+          const expected = [
+            "darwin-arm64",
+            "darwin-x64",
+            "darwin-x64-baseline",
+            "linux-arm64",
+            "linux-arm64-musl",
+            "linux-x64",
+            "linux-x64-baseline",
+            "linux-x64-musl",
+            "linux-x64-baseline-musl",
+            "windows-arm64",
+            "windows-x64",
+            "windows-x64-baseline",
+          ].map((target) => `@opencode-ai/cli-${target}`)
+          const dependencies = manifest.optionalDependencies ?? {}
+
+          assert.equal(manifest.name, "@opencode-ai/cli")
+          assert.equal(manifest.version, process.env.OPENCODE_V2_VERSION)
+          assert.equal(manifest.bin?.opencode2, "./bin/opencode2.exe")
+          assert.equal(manifest.scripts?.postinstall, "node ./postinstall.mjs")
+          assert.deepEqual(Object.keys(dependencies).sort(), expected.sort())
+          for (const name of expected) {
+            assert.equal(dependencies[name], process.env.OPENCODE_V2_VERSION)
+          }
+          NODE
+
+          echo "OpenCode source: ${OPENCODE_V2_UPSTREAM_COMMIT}"
+          echo "OpenCode package: ${spec}"
+
+  verify-plugin-abi:
+    name: Verify Penguin plugin against pinned V2 ABI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Penguin
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned OpenCode ABI
+        uses: actions/checkout@v4
+        with:
+          repository: anomalyco/opencode
+          ref: ${{ env.OPENCODE_V2_UPSTREAM_COMMIT }}
+          path: .opencode2-upstream
+          persist-credentials: false
+
+      - name: Setup pinned Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.OPENCODE_V2_BUN_VERSION }}
+
+      - name: Typecheck, build, and import packaged plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(bun --version)" = "$OPENCODE_V2_BUN_VERSION"
+          test "$(git -C .opencode2-upstream rev-parse HEAD)" = "$OPENCODE_V2_UPSTREAM_COMMIT"
+          cp penguin-tui-v2/plugins/tui/penguin.tsx \
+            .opencode2-upstream/packages/plugin/test/penguin.tsx
+
+          cd .opencode2-upstream
+          bun install --frozen-lockfile --ignore-scripts --filter @opencode-ai/plugin
+          tsc=packages/plugin/node_modules/typescript/bin/tsc
+          test "$(bun "$tsc" --version)" = "Version 5.8.2"
+          bun "$tsc" --noEmit --strict --skipLibCheck \
+            --module preserve --moduleResolution bundler --target ESNext \
+            packages/plugin/test/penguin.tsx
+          mkdir -p .opencode/plugin-abi
+          bun build packages/plugin/test/penguin.tsx --target bun \
+            --outfile .opencode/plugin-abi/penguin.js
+          bun -e '
+            const plugin = (await import("./.opencode/plugin-abi/penguin.js")).default
+            if (plugin.id !== "penguin.product" || typeof plugin.setup !== "function") {
+              process.exit(1)
+            }
+          '
+
+  package-v2-sidecar:
+    name: Package OpenCode V2 (${{ matrix.target }})
+    needs:
+      - verify-upstream-package-map
+      - verify-plugin-abi
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            npm_os: linux
+            cpu: arm64
+            binary: opencode2
+            archive: opencode2-linux-arm64.tar.gz
+            format: tar.gz
+            integrity: "sha512-jBuwFbqoCj5Hql0oaVret7jEzfWvAsUwP4jg1d/fIhdun3N24zK0/a9mGgSvmQ9429JHGE/GF38/Al6ZsKPHzA=="
+          - target: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            npm_os: linux
+            cpu: arm64
+            binary: opencode2
+            archive: opencode2-linux-arm64-musl.tar.gz
+            format: tar.gz
+            integrity: "sha512-EoZ4bGskz/37vEsI8y9h5Ii08vUkvdFzWDESk93fnT1IDfCdtX89FmMdGH+gyHuvAWO+6P+2wS53hwdXkd/OUA=="
+          - target: linux-x64
+            runner: ubuntu-latest
+            npm_os: linux
+            cpu: x64
+            binary: opencode2
+            archive: opencode2-linux-x64.tar.gz
+            format: tar.gz
+            integrity: "sha512-ErusAreVaFm8RbGWdKBMOwZemn5UurbJdZGATRjjeOtGEG6J4IUU2G6h9AeLwKpVXoVVnYQ4jVbmaMh2NKHrjA=="
+          - target: linux-x64-baseline
+            runner: ubuntu-latest
+            npm_os: linux
+            cpu: x64
+            binary: opencode2
+            archive: opencode2-linux-x64-baseline.tar.gz
+            format: tar.gz
+            integrity: "sha512-oY+vqNvE5+66h5sA9Ab2bI65KjPnQtM8M/s4QoZXwfrpdMChzW1POm9i4yI1degMWi7c7OxceMy6KscUXoN0Dg=="
+          - target: linux-x64-musl
+            runner: ubuntu-latest
+            npm_os: linux
+            cpu: x64
+            binary: opencode2
+            archive: opencode2-linux-x64-musl.tar.gz
+            format: tar.gz
+            integrity: "sha512-aNCpP0G58EGE17LzNcTcAhrgnlVy8OKFPuXnjipp3HHcV2hwmEUDg9nlkK+o79AX6nP+ZXHnp+XQuPdaI8ChJQ=="
+          - target: linux-x64-baseline-musl
+            runner: ubuntu-latest
+            npm_os: linux
+            cpu: x64
+            binary: opencode2
+            archive: opencode2-linux-x64-baseline-musl.tar.gz
+            format: tar.gz
+            integrity: "sha512-wcdS/OzMegT15h0PU2zh6KSn+wVim/ymTc4w3JmDGlLXERobvSSHw91Laq0vRV+0Kox3pZVvolemGQJ4eOcDlw=="
+          - target: darwin-arm64
+            runner: macos-15
+            npm_os: darwin
+            cpu: arm64
+            binary: opencode2
+            archive: opencode2-darwin-arm64.zip
+            format: zip
+            integrity: "sha512-eATJ0ZxA1zVgidDzXjPZ6fYnksHj2u6Mx0nqx2uPXIJeYuGNYsJmR4ufJXaCGm7UicocNrCwt9/yB7j0en5roQ=="
+          - target: darwin-x64
+            runner: macos-15-intel
+            npm_os: darwin
+            cpu: x64
+            binary: opencode2
+            archive: opencode2-darwin-x64.zip
+            format: zip
+            integrity: "sha512-TRuvoJLYLjYBAyegLCxxVJCq1Rmn2yQ05YpF+t812gKcu9klFQ0NxypTZzmLxdZ8kdzcWgGFD7A2bMdlBdTi4w=="
+          - target: darwin-x64-baseline
+            runner: macos-15-intel
+            npm_os: darwin
+            cpu: x64
+            binary: opencode2
+            archive: opencode2-darwin-x64-baseline.zip
+            format: zip
+            integrity: "sha512-4TY+i39Bb8AOpErhttSZkQ4w93q0GPwIGaXUPhfMSyWiYbQ2xBaXF42GWThlNYKgUgNu+dT+LVW690+SV6ffRg=="
+          - target: windows-x64
+            runner: windows-2025
+            npm_os: win32
+            cpu: x64
+            binary: opencode2.exe
+            archive: opencode2-windows-x64.zip
+            format: zip
+            integrity: "sha512-w4oMit599NpQWuTVGlnfb1RHJjv9M1CP0SgmylFcAJ+3qgrV2vZTJSrvD5JDqGVwfVC1+ub/Q24F/9MJKmD4Nw=="
+          - target: windows-x64-baseline
+            runner: windows-2025
+            npm_os: win32
+            cpu: x64
+            binary: opencode2.exe
+            archive: opencode2-windows-x64-baseline.zip
+            format: zip
+            integrity: "sha512-TZhHCXGYipiOwvLO2rXEo6Ad0lca0mPgbyAQMfve/FBnZVZaWZgZIw5omTSq2dQb0gJHTwCSgcRQVh4p9ZbbHg=="
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify and package immutable platform binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          NPM_OS: ${{ matrix.npm_os }}
+          CPU: ${{ matrix.cpu }}
+          BINARY_NAME: ${{ matrix.binary }}
+          ASSET_NAME: ${{ matrix.archive }}
+          ARCHIVE_FORMAT: ${{ matrix.format }}
+          EXPECTED_INTEGRITY: ${{ matrix.integrity }}
+        run: |
+          set -euo pipefail
+
+          test -f penguin-tui-v2/plugins/tui/penguin.tsx
+          test -f penguin-tui/LICENSE
+          test "$(node -p 'process.arch')" = "$CPU"
+
+          spec="@opencode-ai/cli-${TARGET}@${OPENCODE_V2_VERSION}"
+          mkdir -p .opencode2-work/pack .opencode2-work/extract
+          mkdir -p .opencode2-work/stage/bin
+          mkdir -p .opencode2-work/stage/plugins/tui
+          mkdir -p .opencode2-work/stage/penguin-tui dist
+
+          pushd .opencode2-work/pack >/dev/null
+          registry_integrity="$(npm view "$spec" dist.integrity)"
+          pack_json="$(npm pack "$spec" --ignore-scripts --json)"
+          tarball="$(node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync(0,"utf8"))[0]; process.stdout.write(p.filename)' <<<"$pack_json")"
+          packed_integrity="$(node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync(0,"utf8"))[0]; process.stdout.write(p.integrity)' <<<"$pack_json")"
+          test "$registry_integrity" = "$EXPECTED_INTEGRITY"
+          test "$packed_integrity" = "$EXPECTED_INTEGRITY"
+          tar -xzf "$tarball" -C ../extract
+          popd >/dev/null
+
+          PACKAGE_MANIFEST=.opencode2-work/extract/package/package.json \
+          EXPECTED_NAME="@opencode-ai/cli-${TARGET}" \
+            node <<'NODE'
+          const assert = require("node:assert/strict")
+          const manifest = require(`./${process.env.PACKAGE_MANIFEST}`)
+          const os = Array.isArray(manifest.os) ? manifest.os : [manifest.os]
+          const cpu = Array.isArray(manifest.cpu) ? manifest.cpu : [manifest.cpu]
+
+          assert.equal(manifest.name, process.env.EXPECTED_NAME)
+          assert.equal(manifest.version, process.env.OPENCODE_V2_VERSION)
+          assert.ok(os.includes(process.env.NPM_OS))
+          assert.ok(cpu.includes(process.env.CPU))
+          NODE
+
+          package_bin_dir=.opencode2-work/extract/package/bin
+          binary_path="${package_bin_dir}/${BINARY_NAME}"
+          test -f "$binary_path"
+          test "$(find "$package_bin_dir" -maxdepth 1 -type f ! -name '*.map' ! -name "$BINARY_NAME" | wc -l | tr -d ' ')" = "0"
+          if [[ "$TARGET" == *-musl ]]; then
+            readelf -l "$binary_path" | grep -F "/lib/ld-musl-"
+          fi
+          chmod +x "$binary_path"
+          if [[ "$TARGET" == *-musl ]]; then
+            docker_arch="$CPU"
+            if [[ "$docker_arch" == "x64" ]]; then
+              docker_arch=amd64
+            fi
+            version_output="$(
+              docker run --rm --platform "linux/${docker_arch}" \
+                --volume "$PWD:/work:ro" \
+                "$OPENCODE_V2_MUSL_TEST_IMAGE" \
+                sh -c 'apk add --no-cache libstdc++ libgcc >/dev/null && "$1" --version' \
+                sh "/work/${binary_path}"
+            )"
+          else
+            version_output="$("$binary_path" --version 2>&1)"
+          fi
+          version_output="${version_output//$'\r'/}"
+          test "$version_output" = "opencode2 v${OPENCODE_V2_VERSION}"
+
+          cp "$binary_path" ".opencode2-work/stage/bin/${BINARY_NAME}"
+          cp penguin-tui-v2/plugins/tui/penguin.tsx \
+            .opencode2-work/stage/plugins/tui/penguin.tsx
+          cp penguin-tui/LICENSE .opencode2-work/stage/penguin-tui/LICENSE
+
+          python_command=python
+          if ! command -v "$python_command" >/dev/null; then
+            python_command=python3
+          fi
+          STAGE_ROOT=.opencode2-work/stage \
+          ASSET_PATH="dist/${ASSET_NAME}" \
+            "$python_command" - <<'PY'
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          stage = Path(os.environ["STAGE_ROOT"])
+          asset = Path(os.environ["ASSET_PATH"])
+          names = [
+              f"bin/{os.environ['BINARY_NAME']}",
+              "plugins/tui/penguin.tsx",
+              "penguin-tui/LICENSE",
+          ]
+
+          if os.environ["ARCHIVE_FORMAT"] == "tar.gz":
+              with tarfile.open(asset, "w:gz") as archive:
+                  for name in names:
+                      archive.add(stage / name, arcname=name, recursive=False)
+              with tarfile.open(asset, "r:gz") as archive:
+                  packaged = archive.getnames()
+          else:
+              with zipfile.ZipFile(
+                  asset, "w", compression=zipfile.ZIP_DEFLATED
+              ) as archive:
+                  for name in names:
+                      archive.write(stage / name, arcname=name)
+              with zipfile.ZipFile(asset, "r") as archive:
+                  packaged = archive.namelist()
+
+          if packaged != names:
+              raise SystemExit(f"unexpected archive layout: {packaged}")
+          print(f"packaged {asset}")
+          PY
+
+          echo "OpenCode source: ${OPENCODE_V2_UPSTREAM_COMMIT}"
+          echo "OpenCode package: ${spec}"
+          sha256sum "dist/${ASSET_NAME}" || shasum -a 256 "dist/${ASSET_NAME}"
+
+      - name: Upload packaged sidecar
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode2-v2-${{ matrix.target }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  assemble-v2-sidecars:
+    name: Assemble OpenCode V2 sidecars
+    needs: package-v2-sidecar
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download packaged sidecars
+        uses: actions/download-artifact@v4
+        with:
+          pattern: opencode2-v2-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify matrix and write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            opencode2-darwin-arm64.zip
+            opencode2-darwin-x64.zip
+            opencode2-darwin-x64-baseline.zip
+            opencode2-linux-arm64.tar.gz
+            opencode2-linux-arm64-musl.tar.gz
+            opencode2-linux-x64.tar.gz
+            opencode2-linux-x64-baseline.tar.gz
+            opencode2-linux-x64-musl.tar.gz
+            opencode2-linux-x64-baseline-musl.tar.gz
+            opencode2-windows-x64.zip
+            opencode2-windows-x64-baseline.zip
+          )
+
+          test "$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')" = "${#expected[@]}"
+          for asset in "${expected[@]}"; do
+            test -f "dist/${asset}"
+          done
+          (
+            cd dist
+            sha256sum "${expected[@]}" > opencode2-SHA256SUMS.txt
+          )
+          cat dist/opencode2-SHA256SUMS.txt
+
+      - name: Upload complete V2 sidecar set
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode2-v2-release-assets
+          path: dist
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish-release-assets:
+    name: Publish OpenCode V2 release assets
+    needs: assemble-v2-sidecars
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download complete V2 sidecar set
+        uses: actions/download-artifact@v4
+        with:
+          name: opencode2-v2-release-assets
+          path: dist
+
+      - name: Attach V2 assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/opencode2-*.zip
+            dist/opencode2-*.tar.gz
+            dist/opencode2-SHA256SUMS.txt
+          fail_on_unmatched_files: true
+
+      - name: Verify GitHub release digests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+            > "$RUNNER_TEMP/release.json"
+          RELEASE_JSON="$RUNNER_TEMP/release.json" node <<'NODE'
+          const assert = require("node:assert/strict")
+          const fs = require("node:fs")
+          const release = JSON.parse(fs.readFileSync(process.env.RELEASE_JSON, "utf8"))
+          const expected = fs.readdirSync("dist").filter((name) =>
+            name === "opencode2-SHA256SUMS.txt" ||
+              name.endsWith(".zip") ||
+              name.endsWith(".tar.gz")
+          )
+          const assets = new Map(release.assets.map((asset) => [asset.name, asset]))
+
+          assert.equal(expected.length, 12)
+          for (const name of expected) {
+            const digest = assets.get(name)?.digest ?? ""
+            assert.match(digest, /^sha256:[0-9a-f]{64}$/)
+          }
+          NODE
