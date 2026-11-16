@@ -35,7 +35,10 @@ _WORKSPACE = os.environ.get(
 
 
 def get_event_db_path() -> str:
-    return str(Path(_WORKSPACE) / "runtime_events" / "runtime_events.db")
+    """Return the ledger the server writes (same rule as ``default_ledger_path``)."""
+    from penguin.system.runtime_event_ledger import default_ledger_path
+
+    return str(default_ledger_path())
 
 
 def get_workspace() -> str:

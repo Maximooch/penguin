@@ -273,6 +273,12 @@ on its own.
   `disabled`) now means no count limit, as `0`/`off` already did for the
   size limit and a zero age limit did for age. Before, `0` emptied the ledger
   on every cleanup. `RuntimeEventLedgerPolicy.max_events` accepts `None`.
+- SM-108: `penguin/server/ws_server.py` and
+  `penguin/memory/providers/milvus_provider.py` are deleted: neither could be
+  imported (missing `new_core` and `base_provider`) and nothing imported
+  them. `penguin/cognition/` has no importers either but holds an empty
+  `placeholder.md`, which reads as a planned subsystem, so it is left as a
+  deletion candidate for Maximus.
 
 ## Item format
 
@@ -771,7 +777,8 @@ independently.
 - [ ] **SM-105 Modal credential precheck order** (a): `penguin/core_runtime/model_runtime.py:37-49` accepts a generic `api_key` before the Modal check the adapter needs.
 - [ ] **SM-106 `SessionManager._revisions` never pruned** (b): `penguin/system/session_manager.py:88,906-907`.
 - [ ] **SM-107 ACP exact-grant policy and mode fields are constant** (a) [security]: `penguin/integrations/acp/grants.py:34-47`; no approval request carries those fields (`penguin/tools/tool_manager.py:2614-2623`).
-- [ ] **SM-108 Dead modules** (b): `penguin/cognition/`, `penguin/server/ws_server.py` (imports a missing `new_core`), `penguin/memory/providers/milvus_provider.py` (imports a missing module); none has an importer. `penguin/dashboard/` is a standalone Streamlit tool whose ledger path ignores `PENGUIN_RUNTIME_EVENT_LEDGER_PATH`.
+- [x] **SM-108 Dead modules** (b): `penguin/cognition/`, `penguin/server/ws_server.py` (imports a missing `new_core`), `penguin/memory/providers/milvus_provider.py` (imports a missing module); none has an importer. `penguin/dashboard/` is a standalone Streamlit tool whose ledger path ignores `PENGUIN_RUNTIME_EVENT_LEDGER_PATH`.
+  - State: (2026-11-15) fixed in part: deleted `penguin/server/ws_server.py` and `penguin/memory/providers/milvus_provider.py` (neither importable nor imported). The dashboard's `get_event_db_path` uses the server's `default_ledger_path`, so it honours `PENGUIN_RUNTIME_EVENT_LEDGER_PATH` and the configured workspace. Left for Maximus: `penguin/cognition/` (no importers, but an empty `placeholder.md` suggests a planned subsystem).
 
 ## Changes on main since the sweep
 
@@ -1068,3 +1075,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-96: fixed (2026-11-15). `pytest -q tests/test_audit_logger_isolation.py`: 1 passed, red before the fix (the second runtime replaced the first's logger); permission, tool-manager and every ACP test file: 50 files, all passed.
 - SM-97: partly fixed (2026-11-15). `pytest -q tests/test_mcp_provider_closed.py`: 1 passed, red before the fix (the closed provider called its manager); MCP and ACP MCP, session and isolation test files: 9 files, all passed.
 - SM-93: fixed (2026-11-15). `pytest -q tests/memory/test_memory_provider_readiness.py`: 2 passed, both red before the fix (the failed provider kept its connection; reading a memory gave 500); memory, tool-manager and memory-route test files pass.
+- SM-108: partly fixed (2026-11-15). `pytest -q tests/test_dashboard_ledger_path.py`: 1 passed, red before the fix (the dashboard used the workspace path); `import penguin` and the memory provider factory still import.
