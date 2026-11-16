@@ -279,6 +279,11 @@ on its own.
   them. `penguin/cognition/` has no importers either but holds an empty
   `placeholder.md`, which reads as a planned subsystem, so it is left as a
   deletion candidate for Maximus.
+- SM-107: approval requests now carry `agent_mode`, `approval_policy` and
+  `permission_mode`, so an ACP "remember for this saved session" grant is
+  bound to them as its key always intended. Grants saved before this change
+  were keyed with those fields empty, so they stop matching and the user is
+  asked once more.
 
 ## Item format
 
@@ -778,7 +783,8 @@ independently.
   - State: (2026-11-15) fixed: `provider_credential_available` checks the Modal rule (endpoint plus proxy token id and secret) before the generic `api_key` test, matching what the Modal adapter needs, so a Modal model with only `api_key` gets the missing-credential message instead of a later provider initialisation failure.
 - [x] **SM-106 `SessionManager._revisions` never pruned** (b): `penguin/system/session_manager.py:88,906-907`.
   - State: (2026-11-15) fixed: `delete_session` and cache eviction drop the session's revision counter (under the dirty lock), so `_revisions` holds only sessions still in memory or modified since; a later change to an evicted session starts a new count.
-- [ ] **SM-107 ACP exact-grant policy and mode fields are constant** (a) [security]: `penguin/integrations/acp/grants.py:34-47`; no approval request carries those fields (`penguin/tools/tool_manager.py:2614-2623`).
+- [x] **SM-107 ACP exact-grant policy and mode fields are constant** (a) [security]: `penguin/integrations/acp/grants.py:34-47`; no approval request carries those fields (`penguin/tools/tool_manager.py:2614-2623`).
+  - State: (2026-11-15) fixed: `ToolManager._permission_response` copies `agent_mode`, `approval_policy` and `permission_mode` from the permission context into the approval request, so the ACP exact-grant key's policy hash and mode reflect them and a remembered grant stops auto-approving when either changes. See "Decisions taken while away" (older saved grants ask once more).
 - [x] **SM-108 Dead modules** (b): `penguin/cognition/`, `penguin/server/ws_server.py` (imports a missing `new_core`), `penguin/memory/providers/milvus_provider.py` (imports a missing module); none has an importer. `penguin/dashboard/` is a standalone Streamlit tool whose ledger path ignores `PENGUIN_RUNTIME_EVENT_LEDGER_PATH`.
   - State: (2026-11-15) fixed in part: deleted `penguin/server/ws_server.py` and `penguin/memory/providers/milvus_provider.py` (neither importable nor imported). The dashboard's `get_event_db_path` uses the server's `default_ledger_path`, so it honours `PENGUIN_RUNTIME_EVENT_LEDGER_PATH` and the configured workspace. Left for Maximus: `penguin/cognition/` (no importers, but an empty `placeholder.md` suggests a planned subsystem).
 
@@ -1080,3 +1086,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-108: partly fixed (2026-11-15). `pytest -q tests/test_dashboard_ledger_path.py`: 1 passed, red before the fix (the dashboard used the workspace path); `import penguin` and the memory provider factory still import.
 - SM-105: fixed (2026-11-15). `pytest -q tests/test_modal_credential_precheck.py`: 1 passed, red before the fix; model runtime, Modal adapter, provider resolution and model switch test files pass apart from the known `test_resolve_request_runtime_uses_runtime_helper` baseline failure.
 - SM-106: fixed (2026-11-15). `pytest -q tests/system/test_session_revisions_pruned.py`: 1 passed, red before the fix; session storage, dirty-tracking, eviction, backup and ACP session test files: 8 files, all passed.
+- SM-107: fixed (2026-11-15). `pytest -q tests/test_approval_context_binding.py`: 1 passed, red before the fix (the fields were missing); ACP grant, permission-wire, child-approval and approval lifecycle test files: 9 files, all passed.

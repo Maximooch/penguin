@@ -2627,6 +2627,11 @@ class ToolManager:
                         tool_input,
                     ),
                     "agent_id": context.get("agent_id"),
+                    # Bound into remembered grants (ACP exact grants), so a
+                    # grant stops matching when the policy or mode changes.
+                    "agent_mode": context.get("agent_mode"),
+                    "approval_policy": context.get("approval_policy"),
+                    "permission_mode": context.get("permission_mode"),
                     "resources": resources,
                     "can_enable_full_access": (
                         context.get("approval_policy") is None
