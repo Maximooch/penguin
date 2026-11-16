@@ -774,7 +774,8 @@ independently.
 
 ### Tier 3
 
-- [ ] **SM-105 Modal credential precheck order** (a): `penguin/core_runtime/model_runtime.py:37-49` accepts a generic `api_key` before the Modal check the adapter needs.
+- [x] **SM-105 Modal credential precheck order** (a): `penguin/core_runtime/model_runtime.py:37-49` accepts a generic `api_key` before the Modal check the adapter needs.
+  - State: (2026-11-15) fixed: `provider_credential_available` checks the Modal rule (endpoint plus proxy token id and secret) before the generic `api_key` test, matching what the Modal adapter needs, so a Modal model with only `api_key` gets the missing-credential message instead of a later provider initialisation failure.
 - [ ] **SM-106 `SessionManager._revisions` never pruned** (b): `penguin/system/session_manager.py:88,906-907`.
 - [ ] **SM-107 ACP exact-grant policy and mode fields are constant** (a) [security]: `penguin/integrations/acp/grants.py:34-47`; no approval request carries those fields (`penguin/tools/tool_manager.py:2614-2623`).
 - [x] **SM-108 Dead modules** (b): `penguin/cognition/`, `penguin/server/ws_server.py` (imports a missing `new_core`), `penguin/memory/providers/milvus_provider.py` (imports a missing module); none has an importer. `penguin/dashboard/` is a standalone Streamlit tool whose ledger path ignores `PENGUIN_RUNTIME_EVENT_LEDGER_PATH`.
@@ -1076,3 +1077,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-97: partly fixed (2026-11-15). `pytest -q tests/test_mcp_provider_closed.py`: 1 passed, red before the fix (the closed provider called its manager); MCP and ACP MCP, session and isolation test files: 9 files, all passed.
 - SM-93: fixed (2026-11-15). `pytest -q tests/memory/test_memory_provider_readiness.py`: 2 passed, both red before the fix (the failed provider kept its connection; reading a memory gave 500); memory, tool-manager and memory-route test files pass.
 - SM-108: partly fixed (2026-11-15). `pytest -q tests/test_dashboard_ledger_path.py`: 1 passed, red before the fix (the dashboard used the workspace path); `import penguin` and the memory provider factory still import.
+- SM-105: fixed (2026-11-15). `pytest -q tests/test_modal_credential_precheck.py`: 1 passed, red before the fix; model runtime, Modal adapter, provider resolution and model switch test files pass apart from the known `test_resolve_request_runtime_uses_runtime_helper` baseline failure.

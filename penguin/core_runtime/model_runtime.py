@@ -36,9 +36,9 @@ def provider_credential_available(model_config: ModelConfig) -> bool:
     provider = str(getattr(model_config, "provider", "") or "").strip().lower()
     if provider in {"ollama", "local"}:
         return True
-    if str(getattr(model_config, "api_key", "") or "").strip():
-        return True
     if provider == "modal":
+        # The Modal adapter authenticates with proxy tokens and ignores
+        # api_key, so a configured api_key does not make it ready.
         endpoint = (
             str(getattr(model_config, "api_base", "") or "").strip()
             or str(os.getenv("MODAL_ENDPOINT") or "").strip()
@@ -48,6 +48,8 @@ def provider_credential_available(model_config: ModelConfig) -> bool:
             and str(os.getenv("MODAL_PROXY_TOKEN_ID") or "").strip()
             and str(os.getenv("MODAL_PROXY_TOKEN_SECRET") or "").strip()
         )
+    if str(getattr(model_config, "api_key", "") or "").strip():
+        return True
     if provider == "runinfra":
         return bool(
             str(
