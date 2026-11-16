@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -14,9 +15,9 @@ from weakref import WeakValueDictionary
 
 if TYPE_CHECKING:
     from _thread import RLock
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
-__all__ = ["atomic_write_text", "store_lock", "synchronized_store"]
+__all__ = ["atomic_write_text", "interprocess_lock", "store_lock", "synchronized_store"]
 
 logger = logging.getLogger(__name__)
 _LOCKS: WeakValueDictionary[str, RLock] = WeakValueDictionary()
@@ -34,6 +35,36 @@ def store_lock(directory: Path) -> RLock:
             lock = threading.RLock()
             _LOCKS[key] = lock
         return lock
+
+
+@contextmanager
+def interprocess_lock(path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on ``path`` shared with other processes.
+
+    ``store_lock`` serializes managers inside one process; this covers a
+    read-merge-write that another process (web server and CLI on one
+    workspace) may run at the same time. The lock file is left in place.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def synchronized_store(method: Callable[..., _T]) -> Callable[..., _T]:

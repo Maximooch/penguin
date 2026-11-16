@@ -41,6 +41,7 @@ from penguin.config import CONVERSATIONS_PATH
 from penguin.system.state import Message, MessageCategory, Session, create_message
 from penguin.system.atomic_storage import (
     atomic_write_text,
+    interprocess_lock,
     store_lock,
     synchronized_store,
 )
@@ -194,24 +195,30 @@ class SessionManager:
     def _save_index(self, index: Dict[str, Dict[str, Any]]) -> bool:
         """Atomically persist local index changes without erasing peer saves."""
         try:
-            merged = deepcopy(index)
-            if self._saved_index is not None:
-                try:
-                    with _safe_open(self.index_path, "r", encoding="utf-8") as source:
-                        on_disk = json.load(source)
-                except (FileNotFoundError, json.JSONDecodeError, UnicodeError):
-                    on_disk = None
-                if isinstance(on_disk, dict):
-                    merged = on_disk
-                    for key in self._saved_index.keys() - index.keys():
-                        merged.pop(key, None)
-                    for key, value in index.items():
-                        if (
-                            key not in self._saved_index
-                            or value != self._saved_index[key]
-                        ):
-                            merged[key] = deepcopy(value)
-            atomic_write_text(self.index_path, json.dumps(merged, indent=2))
+            # Read, merge and write as one step across processes too, so a
+            # peer's save between our read and our write is not overwritten.
+            lock_path = self.index_path.with_name(self.index_path.name + ".lock")
+            with interprocess_lock(lock_path):
+                merged = deepcopy(index)
+                if self._saved_index is not None:
+                    try:
+                        with _safe_open(
+                            self.index_path, "r", encoding="utf-8"
+                        ) as source:
+                            on_disk = json.load(source)
+                    except (FileNotFoundError, json.JSONDecodeError, UnicodeError):
+                        on_disk = None
+                    if isinstance(on_disk, dict):
+                        merged = on_disk
+                        for key in self._saved_index.keys() - index.keys():
+                            merged.pop(key, None)
+                        for key, value in index.items():
+                            if (
+                                key not in self._saved_index
+                                or value != self._saved_index[key]
+                            ):
+                                merged[key] = deepcopy(value)
+                atomic_write_text(self.index_path, json.dumps(merged, indent=2))
             index.clear()
             index.update(merged)
             self._saved_index = deepcopy(merged)
