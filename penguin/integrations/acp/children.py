@@ -334,6 +334,23 @@ class ChildTracker:
                 record=False,
             )
 
+    def adopt(self, sid: str, root: str, agent: str | None) -> None:
+        """Re-register a finished child known only from saved history.
+
+        Lets updates for its restored records (a process that outlived a
+        reconnect) be routed to the client as the child's again.
+        """
+        if sid == root or sid in self.children:
+            return
+        session = self.owner.sessions.get(root)
+        self.children[sid] = Child(
+            parent=self.replay_parents.get(sid, root),
+            root=root,
+            agent=agent or "agent",
+            cwd=session.cwd if session is not None else Path("."),
+            active=False,
+        )
+
     async def close_root(self, root: str) -> None:
         for sid, child in self.children.items():
             if child.root == root:

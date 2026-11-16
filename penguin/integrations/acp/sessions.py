@@ -198,8 +198,24 @@ class SessionRegistry:
             ) from None
         pending: set[str] = set()
         background: set[str] = set()
+        # Native child envelopes: (child, call id) still open at the end.
+        child_pending: dict[tuple[str, str], None] = {}
         for update in updates:
             if isinstance(update, dict):
+                inner = update.get("update")
+                if not isinstance(inner, dict) or inner.get("sessionUpdate") not in {
+                    "tool_call",
+                    "tool_call_update",
+                }:
+                    continue
+                call = (str(update.get("acp_target")), str(inner.get("toolCallId")))
+                meta = inner.get("_meta")
+                if isinstance(meta, dict) and meta.get("penguin_process"):
+                    continue  # background processes are settled by ProcessTracker
+                if inner.get("status") in {"completed", "failed"}:
+                    child_pending.pop(call, None)
+                else:
+                    child_pending[call] = None
                 continue
             if update.session_update not in {"tool_call", "tool_call_update"}:
                 continue
@@ -225,4 +241,25 @@ class SessionRegistry:
                 ],
             )
             synthesized.append(failed)
+        for target, call_id in child_pending:
+            synthesized.append(
+                {
+                    "acp_target": target,
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": call_id,
+                        "status": "failed",
+                        "content": [
+                            {
+                                "type": "content",
+                                "content": {
+                                    "type": "text",
+                                    "text": "Connection ended before this tool "
+                                    "reported completion.",
+                                },
+                            }
+                        ],
+                    },
+                }
+            )
         return updates + synthesized, synthesized

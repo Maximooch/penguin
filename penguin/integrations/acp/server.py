@@ -821,7 +821,9 @@ class PenguinACPAgent:
                 self._registry.save(saved)
                 self._grants.restore(session_id, saved)
                 for update in history:
-                    if not isinstance(update, dict):
+                    if isinstance(update, dict):
+                        self._processes.restore_raw(session_id, update)
+                    else:
                         self._processes.restore(session_id, update)
                 if replay:
                     for update in history:
@@ -854,7 +856,10 @@ class PenguinACPAgent:
                 raise
             # The load succeeded: keep the "never completed" outcomes it showed.
             for update in closures:
-                self._registry.record(session_id, update)
+                if isinstance(update, dict):
+                    self._registry.append(session_id, update)
+                else:
+                    self._registry.record(session_id, update)
 
     async def list_sessions(
         self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any

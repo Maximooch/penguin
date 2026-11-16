@@ -78,10 +78,10 @@ class ProcessTracker:
             and payload.get("process_status") not in {"running", "draining", "exited"}
         ):
             return
-        child = self.owner._children.children.get(sid)
-        root = child.root if child else sid
         key = (sid, pid)
         current = self.states.get(key)
+        child = self.owner._children.children.get(sid)
+        root = child.root if child else (current or {}).get("root", sid)
         if current and current.get("completed") and not force:
             return
         if root not in self.owner.sessions:
@@ -127,7 +127,8 @@ class ProcessTracker:
         snapshot = {
             "completed": completed,
             "output": output,
-            "agent": payload.get("agent_id") or "agent",
+            "agent": payload.get("agent_id") or (current or {}).get("agent") or "agent",
+            "root": root,
         }
         if snapshot == current and not force:
             return
@@ -159,27 +160,55 @@ class ProcessTracker:
             callback(root)
 
     def restore(self, root: str, update: Any) -> None:
+        """Rebuild process state from one saved root-journal update."""
         meta = getattr(update, "field_meta", None) or {}
-        process = meta.get("penguin_process")
+        self._restore(
+            root,
+            root,
+            getattr(update, "tool_call_id", "") or "",
+            getattr(update, "status", None),
+            meta.get("penguin_process"),
+        )
+
+    def restore_raw(self, root: str, record: dict[str, Any]) -> None:
+        """Rebuild process state from a saved native child envelope."""
+        update = record.get("update")
+        target = record.get("acp_target")
+        if not isinstance(update, dict) or not isinstance(target, str):
+            return
+        meta = update.get("_meta") or {}
+        self._restore(
+            root,
+            target,
+            str(update.get("toolCallId") or ""),
+            update.get("status"),
+            meta.get("penguin_process") if isinstance(meta, dict) else None,
+        )
+
+    def _restore(
+        self, root: str, target: str, call_id: str, status: Any, process: Any
+    ) -> None:
         if isinstance(process, dict) and isinstance(process.get("id"), str):
-            sid = process.get("session", root)
+            sid = process.get("session") or target
             self.states[(sid, process["id"])] = {
-                "agent": process.get("agent") or "agent"
+                "agent": process.get("agent") or "agent",
+                "root": root,
             }
-        call_id = getattr(update, "tool_call_id", "")
-        if call_id.startswith("process:") and getattr(update, "status", None) in {
-            "completed",
-            "failed",
-        }:
-            key = (root, call_id.removeprefix("process:"))
-            if key in self.states:
-                self.states[key]["completed"] = True
+            self.owner._children.adopt(sid, root, process.get("agent"))
+        # A root process is "process:<pid>"; a child's, outside native mode,
+        # is "<child>:process:<pid>"; a native child envelope targets the child.
+        sid, marker, pid = call_id.rpartition("process:")
+        if not marker or not pid:
+            return
+        sid = sid.removesuffix(":") or target
+        if status in {"completed", "failed"} and (sid, pid) in self.states:
+            self.states[(sid, pid)]["completed"] = True
 
     async def refresh(self, root: str) -> None:
         manager = getattr(self.owner.core, "tool_manager", None)
         runtime = getattr(manager, "_process_runtime", None)
         for (sid, pid), state in list(self.states.items()):
-            if sid != root:
+            if state.get("root", sid) != root:
                 continue
             if state.get("completed"):
                 continue
