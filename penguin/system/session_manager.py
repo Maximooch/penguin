@@ -449,6 +449,8 @@ class SessionManager:
                     )
                     continue
                 self.sessions.pop(candidate_id, None)
+                with self._dirty_lock:
+                    self._revisions.pop(candidate_id, None)
                 logger.debug(f"Evicted session {candidate_id} from cache (LRU policy)")
                 break
     
@@ -873,6 +875,8 @@ class SessionManager:
             # Remove from memory
             if session_id in self.sessions:
                 del self.sessions[session_id]
+            with self._dirty_lock:
+                self._revisions.pop(session_id, None)
                 
             # Clear current session if it matches
             if self.current_session and self.current_session.id == session_id:
