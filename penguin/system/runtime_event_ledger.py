@@ -577,9 +577,10 @@ class RuntimeEventLedger:
 
     def _incremental_vacuum(self, conn: sqlite3.Connection) -> None:
         try:
-            # The pragma frees one page per result row read; without reading
-            # them it frees almost nothing and the file never shrinks.
-            conn.execute("PRAGMA incremental_vacuum").fetchall()
+            # The pragma frees one page per step. execute() steps it once on
+            # Python 3.11 (one page freed); executescript() runs it to
+            # completion on every supported version.
+            conn.executescript("PRAGMA incremental_vacuum;")
         except sqlite3.DatabaseError:
             pass
 
