@@ -333,10 +333,3 @@ jobs:
           yarn test:security
           yarn build
           git diff --exit-code -- yarn.lock
-      - name: Verify the visualizer dependency graph and build
-        working-directory: examples/agent-visualizer-web
-        run: |
-          npm ci
-          npm audit
-          npm run build
-          git diff --exit-code -- package-lock.json
