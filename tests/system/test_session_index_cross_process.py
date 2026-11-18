@@ -9,29 +9,25 @@ other's new session, which neither process wrote again.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import time
 from typing import TYPE_CHECKING
-
-import pytest
 
 from penguin.system.session_manager import SessionManager
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="uses fcntl in the peer")
-
-# A peer process: take the index lock, read the index, wait (while the test
-# saves), then write the read index plus its own entry.
+# A peer process (another Penguin on the same workspace): take the index lock
+# the same way Penguin does, read the index, wait while the test saves, then
+# write the read index plus its own entry. Runs on POSIX and Windows.
 _PEER = """
-import fcntl, json, sys, time
+import json, sys, time
 from pathlib import Path
+from penguin.system.atomic_storage import interprocess_lock
 index = Path(sys.argv[1])
-with open(str(index) + ".lock", "a+b") as handle:
-    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+with interprocess_lock(Path(str(index) + ".lock")):
     Path(sys.argv[2]).write_text("locked")
     entries = json.loads(index.read_text()) if index.exists() else {}
     time.sleep(1.0)
