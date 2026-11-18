@@ -18,6 +18,7 @@ from . import (
     opencode_transcript as core_opencode_transcript,
     process_lifecycle,
 )
+from .runmode_lifecycle import in_runmode_run
 
 __all__ = [
     "abort_session",
@@ -805,7 +806,8 @@ def finalize_streaming_message(
             )
 
         temp_ws_callback = getattr(owner, "_temp_ws_callback", None)
-        if temp_ws_callback:
+        # Only the RunMode run's own messages go to its socket.
+        if temp_ws_callback and in_runmode_run(owner):
             _schedule_background_task(
                 owner,
                 temp_ws_callback(

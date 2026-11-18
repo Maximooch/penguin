@@ -364,6 +364,11 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `permission.asked`. `_approval_ws_manager.connect()` is never called.
   - Correction: one service function behind both endpoints; session
     ownership check; register callbacks at startup; delete the dead manager.
+  - Disposition (2026-11-17, for review): partly fixed. Deferred to a
+    follow-up, not done in PR #164: the session-ownership check on permission
+    replies, the two endpoints' disagreement on resolved requests and scopes,
+    and the dead `_approval_ws_manager`. The ownership check is a security
+    boundary and needs the reviewer's decision on the client API change.
   - State: event delivery is fixed. On hold: neither reply endpoint checks
     that the request belongs to the caller's session (needs the client to send
     a session id, an API change); the two endpoints still differ on an
@@ -651,7 +656,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - State: (done, 2026-11-15) request preparation and the request read OAuth credentials the same way: a stored OAuth record wins, otherwise the environment, parsed once by `_oauth_record_from_env`. Before, preparation skipped a stored record without an access token and routed on an environment token, while the request used the stored record and failed. Not changed: `_apply_oauth_record_to_runtime` still writes `os.environ` and `model_config.api_key`; on one event loop a read that needs no refresh is applied without awaiting, so a stale token cannot overwrite a newer one, and `refresh_provider_oauth` already refreshes once under a lock. Writing to shared config belongs to the ModelConfig ownership decision (SM-35).
 - [ ] **SM-51 ACP session turn** (stale 2026-11-13: `cancel` on main now captures `session.task` before awaiting, so the `None.cancel()` path is gone) (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
 - [x] **SM-52 Run-mode task WebSocket** (b): `penguin/web/routes.py:6682-6886`; `core._temp_ws_callback` is a single slot.
-  - State: (partial, 2026-11-15) fixed: the run-mode task WebSocket's event callback is now an argument of `start_run_mode` (`websocket_event_callback`); the RunMode lifecycle installs it in `_temp_ws_callback` after its busy check and clears it in its own cleanup. Before, the route set the slot before starting, so a second socket took over the running task's events (its own start then failed with `RunModeBusyError`) and either socket's exit deleted the slot. Still open: while the slot is set, `stream_events` forwards finalized messages from every session to it, not only the RunMode run's.
+  - State: (partial, 2026-11-15) fixed: the run-mode task WebSocket's event callback is now an argument of `start_run_mode` (`websocket_event_callback`); the RunMode lifecycle installs it in `_temp_ws_callback` after its busy check and clears it in its own cleanup. Before, the route set the slot before starting, so a second socket took over the running task's events (its own start then failed with `RunModeBusyError`) and either socket's exit deleted the slot. (2026-11-17) Also fixed: the stream finalizer sends a finalized message to the RunMode socket only from inside that run (a context variable set by `start_run_mode` and inherited by the run's tasks); before, it forwarded every session's finalized messages while the slot was set, a cross-session data leak.
 - [x] **SM-53 Sub-agent registry** (b): `penguin/system/conversation_manager.py:224-240,340,501-582,1598`; removing the current agent leaves three "current" pointers stale.
   - State: (done, 2026-11-15) removing the current agent now calls `set_current_agent("default")`, which moves the conversation, session manager, checkpoint manager, context window and context loader together. Before, only `current_agent_id` and `conversation` moved, so session saves, checkpoints and context trimming kept using the removed agent's objects. The no-op context-loader block in `remove_agent` is gone.
 - [x] **SM-54 AgentExecutor task state** (c): `penguin/multi/executor.py:212-443`, `penguin/multi/coordinator.py:309`; PAUSED is a label only; `cancel()` overwrites a finished state.
@@ -1005,7 +1010,7 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   description: 1623 passed, 23 skipped, 3 xfailed. One of the SM-05 tests
   failed in this combined order until its fixture cleared leftover listeners.
 - Items ticked `[x]` whose State line lists what is still open are only
-  partly fixed: SM-09, SM-11, SM-21, SM-30, SM-43, SM-47, SM-54, SM-56, SM-58,
+  partly fixed: SM-05, SM-09, SM-11, SM-21, SM-30, SM-43, SM-47, SM-54, SM-56, SM-58,
   SM-63. Not started: every unticked item without an "on hold" note.
 - SM-17: partly fixed (2026-11-13). Two new cases in `tests/test_engine_initialization.py` (unexpected error, cancellation) were red before the fix; engine and core-runtime suites: 564 passed.
 - SM-72: partly fixed (2026-11-13). `pytest -q tests/test_sidecar_install_atomic.py tests/test_opencode_launcher.py`: 28 passed.
@@ -1091,3 +1096,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-107: fixed (2026-11-15). `pytest -q tests/test_approval_context_binding.py`: 1 passed, red before the fix (the fields were missing); ACP grant, permission-wire, child-approval and approval lifecycle test files: 9 files, all passed.
 - SM-95: fixed (2026-11-15). `pytest -q tests/system/test_session_index_cross_process.py`: 1 passed, red before the fix (a peer process's stale write dropped our new session); session storage, view, route and ACP session test files: 15 files, all passed. The Windows lock path is exercised by the ACP Windows CI jobs, not locally.
 - SM-102: fixed (2026-11-15). `pytest -q tests/integrations/test_acp_child_restore.py`: 3 passed, all 3 red before the fix (a child's process stayed unresolved after reconnect, in native and non-native mode; a native child's open tool call stayed in progress); every ACP test file: 32 files, all passed.
+- SM-52: completed (2026-11-17). `pytest -q tests/test_runmode_ws_session_scope.py`: 1 passed, red before the fix (another session's message reached the RunMode socket); RunMode, streaming, execution-context and run-mode route test files: 24 files, no failures.

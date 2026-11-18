@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from penguin.utils.errors import RunModeBusyError
@@ -9,7 +10,17 @@ from penguin.utils.errors import RunModeBusyError
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-__all__ = ["start_run_mode"]
+__all__ = ["in_runmode_run", "start_run_mode"]
+
+# Marks the RunMode run's own execution (inherited by tasks it starts), so its
+# event sink receives only that run's output, not other sessions'.
+_RUNMODE_RUN: ContextVar[object | None] = ContextVar("runmode_run", default=None)
+
+
+def in_runmode_run(owner: Any) -> bool:
+    """Return whether the caller runs inside ``owner``'s active RunMode run."""
+    run_id = getattr(owner, "_runmode_run_id", None)
+    return run_id is not None and _RUNMODE_RUN.get() is run_id
 
 
 async def start_run_mode(
@@ -48,6 +59,9 @@ async def start_run_mode(
     )
     owner._runmode_active = True
     owner.current_runmode_status_summary = "Starting RunMode..."
+    run_id = object()
+    owner._runmode_run_id = run_id
+    run_token = _RUNMODE_RUN.set(run_id)
 
     run_mode = None
     try:
@@ -93,6 +107,8 @@ async def start_run_mode(
         raise
 
     finally:
+        _RUNMODE_RUN.reset(run_token)
+        owner._runmode_run_id = None
         owner._runmode_active = False
         owner._runmode_stream_callback = None
         owner.run_mode = None
