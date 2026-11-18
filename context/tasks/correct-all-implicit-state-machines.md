@@ -795,6 +795,11 @@ independently.
 - [x] **SM-108 Dead modules** (b): `penguin/cognition/`, `penguin/server/ws_server.py` (imports a missing `new_core`), `penguin/memory/providers/milvus_provider.py` (imports a missing module); none has an importer. `penguin/dashboard/` is a standalone Streamlit tool whose ledger path ignores `PENGUIN_RUNTIME_EVENT_LEDGER_PATH`.
   - State: (2026-11-15) fixed in part: deleted `penguin/server/ws_server.py` and `penguin/memory/providers/milvus_provider.py` (neither importable nor imported). The dashboard's `get_event_db_path` uses the server's `default_ledger_path`, so it honours `PENGUIN_RUNTIME_EVENT_LEDGER_PATH` and the configured workspace. Left for Maximus: `penguin/cognition/` (no importers, but an empty `placeholder.md` suggests a planned subsystem).
 
+### Found in manual testing (2026-11-17)
+
+- [x] **SM-109 Runtime event ledger size cleanup empties the ledger** (b): `penguin/system/runtime_event_ledger.py` (`_cleanup_by_size`, `_incremental_vacuum`).
+  - State: (fixed, 2026-11-17) `PRAGMA incremental_vacuum` frees one page per result row read, and the ledger never read them, so deleted rows left free pages and the file never shrank. Measured by file size, the ledger stayed over its 256 MB cap for good and every cleanup deleted all but one row: in the field, 13 rows in a 1.56 GB file (380,877 of 381,358 pages free), so reconnect replay had almost nothing. The vacuum now reads its results, and size cleanup reclaims free pages before measuring, so rows are deleted only for retained data.
+
 ## Changes on main since the sweep
 
 `origin/main` moved 63 commits between the sweep and 2026-11-13. Seen so far:
@@ -1097,3 +1102,5 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-95: fixed (2026-11-15). `pytest -q tests/system/test_session_index_cross_process.py`: 1 passed, red before the fix (a peer process's stale write dropped our new session); session storage, view, route and ACP session test files: 15 files, all passed. The Windows lock path is exercised by the ACP Windows CI jobs, not locally.
 - SM-102: fixed (2026-11-15). `pytest -q tests/integrations/test_acp_child_restore.py`: 3 passed, all 3 red before the fix (a child's process stayed unresolved after reconnect, in native and non-native mode; a native child's open tool call stayed in progress); every ACP test file: 32 files, all passed.
 - SM-52: completed (2026-11-17). `pytest -q tests/test_runmode_ws_session_scope.py`: 1 passed, red before the fix (another session's message reached the RunMode socket); RunMode, streaming, execution-context and run-mode route test files: 24 files, no failures.
+
+- SM-109: fixed (2026-11-17). `pytest -q tests/api/test_runtime_event_ledger_vacuum.py`: 2 passed, both red before the fix (free pages kept; a bloated file lost its events); ledger and SSE test files: 32 passed.

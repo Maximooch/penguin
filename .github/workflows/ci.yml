@@ -38,6 +38,7 @@ jobs:
           tests/system/test_session_revisions_pruned.py
           tests/api/test_runtime_event_ids_across_restart.py
           tests/api/test_runtime_event_ledger_limits.py
+          tests/api/test_runtime_event_ledger_vacuum.py
           tests/api/test_sse_ledger_flush_protocol.py
 
   windows-process-contract:

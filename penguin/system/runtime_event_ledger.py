@@ -526,6 +526,11 @@ class RuntimeEventLedger:
         conn.commit()
         if not self._checkpoint_wal(conn):
             return
+        # Reclaim free pages first, so only retained events count against
+        # the cap and rows are never deleted to pay for empty pages.
+        self._incremental_vacuum(conn)
+        conn.commit()
+        self._checkpoint_wal(conn)
         current_size = self._database_size_bytes(conn)
         if current_size <= max_bytes:
             return
@@ -572,7 +577,9 @@ class RuntimeEventLedger:
 
     def _incremental_vacuum(self, conn: sqlite3.Connection) -> None:
         try:
-            conn.execute("PRAGMA incremental_vacuum")
+            # The pragma frees one page per result row read; without reading
+            # them it frees almost nothing and the file never shrinks.
+            conn.execute("PRAGMA incremental_vacuum").fetchall()
         except sqlite3.DatabaseError:
             pass
 
