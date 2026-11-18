@@ -26,6 +26,10 @@ from penguin.web.services.opencode_events import (
     record_opencode_event,
     sse_event_frame,
 )
+from penguin.web.services.system_status import (
+    unwatch_vcs_directory,
+    watch_vcs_directory,
+)
 
 if TYPE_CHECKING:
     from penguin.core import PenguinCore
@@ -361,6 +365,8 @@ async def events_sse(
 
         # Subscribe to events
         core.event_bus.subscribe("opencode_event", event_handler)
+        # This client's directory is polled for VCS changes while it is here.
+        vcs_watch = watch_vcs_directory(core, directory, effective_session_id)
 
         try:
             # Send initial server.connected event
@@ -418,6 +424,7 @@ async def events_sse(
                 core.event_bus.unsubscribe("opencode_event", event_handler)
             except Exception:
                 pass
+            unwatch_vcs_directory(core, vcs_watch)
             # Final best-effort flush so replay sees the freshest events even
             # when the connection dropped mid-batch.
             try:

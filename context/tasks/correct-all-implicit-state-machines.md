@@ -799,6 +799,10 @@ independently.
 
 - [x] **SM-109 Runtime event ledger size cleanup empties the ledger** (b): `penguin/system/runtime_event_ledger.py` (`_cleanup_by_size`, `_incremental_vacuum`).
   - State: (fixed, 2026-11-17) `PRAGMA incremental_vacuum` frees one page per result row read, and the ledger never read them, so deleted rows left free pages and the file never shrank. Measured by file size, the ledger stayed over its 256 MB cap for good and every cleanup deleted all but one row: in the field, 13 rows in a 1.56 GB file (380,877 of 381,358 pages free), so reconnect replay had almost nothing. The vacuum now reads its results, and size cleanup reclaims free pages before measuring, so rows are deleted only for retained data.
+- [x] **SM-110 VCS watcher polls every directory ever used, forever** (b): `penguin/web/services/system_status.py` (`_vcs_watch_loop`), `penguin/web/sse_events.py`.
+  - State: (fixed, 2026-11-17) the watcher ran up to seven `git` commands every 2 s for the server's directory and every directory any session had used (`_opencode_session_directories` only grows), with or without a client; on macOS each spawn also prints a MallocStackLogging line, flooding the log. Each SSE connection now registers its directory while open (`watch_vcs_directory` / `unwatch_vcs_directory`), only watched directories are polled, and an unchanged directory backs off from the base interval up to 10 s, resetting on any change. An idle server runs no git.
+- [ ] **SM-111 Sessions past the message limit stop answering** (b) [design]: `penguin/system/conversation.py:233-247`, `penguin/system/session_manager.py` (`check_session_boundary`, `create_continuation_session`).
+  - Found 2026-11-17 in a 5,002-message TUI session: each prompt loads the original session, adds the message, crosses `PENGUIN_MAX_MESSAGES_PER_SESSION` (5,000), creates a continuation holding only the system prompt and a "Continuing from" note, and builds the request from it, so it goes out with no input (OpenAI 400 `missing_required_parameter`) and the turn ends silently. The next prompt loads the original again and repeats. Needs a decision on what a long session should do.
 
 ## Changes on main since the sweep
 
@@ -1104,3 +1108,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-52: completed (2026-11-17). `pytest -q tests/test_runmode_ws_session_scope.py`: 1 passed, red before the fix (another session's message reached the RunMode socket); RunMode, streaming, execution-context and run-mode route test files: 24 files, no failures.
 
 - SM-109: fixed (2026-11-17). `pytest -q tests/api/test_runtime_event_ledger_vacuum.py`: 2 passed, both red before the fix (free pages kept; a bloated file lost its events); ledger and SSE test files: 32 passed.
+- SM-110: fixed (2026-11-17). `pytest -q tests/api/test_vcs_watcher_bounds.py`: 3 passed, all red before the fix; two watcher tests in `test_vcs_status_service.py` updated to register a watching client; every SSE, status and VCS test file: 143 passed.
