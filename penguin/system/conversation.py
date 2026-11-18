@@ -241,13 +241,22 @@ class ConversationSystem:
             # Save current session before transitioning
             self.save()
 
-            # Create continuation session and switch to it
-            new_session = self.session_manager.create_continuation_session(self.session)
-            self.session = new_session
-            self._modified = True
-
-            # Log transition for debugging
-            logger.info(f"Transitioned to continuation session {new_session.id}")
+            # Continue under the same id, carrying recent history. If the
+            # older history cannot be archived, keep the session as it is.
+            try:
+                new_session = self.session_manager.create_continuation_session(
+                    self.session
+                )
+            except OSError:
+                logger.error(
+                    "Could not continue session %s; keeping it as is",
+                    self.session.id,
+                    exc_info=True,
+                )
+            else:
+                self.session = new_session
+                self._modified = True
+                logger.info(f"Continued session {new_session.id} with recent history")
 
         return message
 

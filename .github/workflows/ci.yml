@@ -36,6 +36,7 @@ jobs:
           tests/system/test_session_eviction_unsaved.py
           tests/system/test_session_backup_restore.py
           tests/system/test_session_revisions_pruned.py
+          tests/system/test_session_rollover_history.py
           tests/api/test_runtime_event_ids_across_restart.py
           tests/api/test_runtime_event_ledger_limits.py
           tests/api/test_runtime_event_ledger_vacuum.py

@@ -648,128 +648,163 @@ class SessionManager:
     @synchronized_store
     def create_continuation_session(self, source_session: Optional[Session] = None) -> Session:
         """
-        Create a new session that continues from an existing one.
-        
-        This transfers system and context messages to maintain conversation continuity.
-        
+        Continue a session that reached its message limit.
+
+        The continuation keeps the source session's id, so clients that
+        address the conversation by id (TUI, web, ACP) keep working. It
+        carries the SYSTEM and CONTEXT messages, a transition marker and the
+        most recent history. The full history up to this point is archived
+        under a new id; the continuation's ``continued_from`` points at the
+        archive and the archive's ``continued_to`` points back.
+
         Args:
             source_session: Source session to continue from (defaults to current_session)
-            
+
         Returns:
-            New continuation Session object
+            The continuation Session (same id as the source)
         """
         source_session = source_session or self.current_session
         if not source_session:
             raise ValueError("No source session provided for continuation")
-        
-        # Ensure source session has accurate token count
+
+        live_id = source_session.id
         source_token_count = source_session.total_tokens
-        source_session.metadata["token_count"] = source_token_count
-        
-        # Create new session with proper metadata
+        now = datetime.now().isoformat()
+
+        # Archive: everything so far, under a new id.
+        archive = Session(
+            messages=list(source_session.messages),
+            created_at=source_session.created_at,
+            last_active=source_session.last_active,
+            metadata={
+                **source_session.metadata,
+                "token_count": source_token_count,
+                "message_count": len(source_session.messages),
+                "continued_to": live_id,
+                "continuation_time": now,
+                "archived_from": live_id,
+            },
+            llm_request_lifecycles=list(source_session.llm_request_lifecycles),
+            tool_call_records=list(source_session.tool_call_records),
+            tool_result_records=list(source_session.tool_result_records),
+        )
+
+        carried_metadata = {
+            key: value
+            for key, value in source_session.metadata.items()
+            if key not in {"continued_to", "continuation_time", "archived_from"}
+        }
         continuation = Session(
+            id=live_id,
+            created_at=source_session.created_at,
             metadata={
-                "continued_from": source_session.id,
-                "original_created_at": source_session.created_at,
-                "continuation_index": self._get_continuation_index(source_session.id),
-                "message_count": 0,
-                "source_session_tokens": source_token_count,
-                "token_count": 0  # Will be updated after adding messages
-            }
-        )
-        
-        # Transfer all SYSTEM and CONTEXT messages
-        token_counter = getattr(self, 'token_counter', None)
-        
-        for category in [MessageCategory.SYSTEM, MessageCategory.CONTEXT]:
-            for msg in source_session.get_messages_by_category(category):
-                transferred_msg = Message(
-                    role=msg.role,
-                    content=msg.content,
-                    category=msg.category,
-                    metadata=msg.metadata.copy(),
-                    tokens=msg.tokens  # Preserve token counts
+                **carried_metadata,
+                "continued_from": archive.id,
+                "original_created_at": source_session.metadata.get(
+                    "original_created_at", source_session.created_at
+                ),
+                "continuation_index": int(
+                    source_session.metadata.get("continuation_index", 0) or 0
                 )
-                continuation.add_message(transferred_msg)
-        
-        # Add transition marker
-        transition_message = create_message(
-            role="system",
-            content=f"Continuing from session {source_session.id}",
-            category=MessageCategory.SYSTEM,
-            metadata={
-                "type": "session_transition", 
-                "previous_session": source_session.id,
-                "previous_session_tokens": source_token_count
-            }
+                + 1,
+                "source_session_tokens": source_token_count,
+            },
         )
-        continuation.add_message(transition_message)
-        
-        # Update source session metadata with link to continuation
-        source_session.metadata["continued_to"] = continuation.id
-        source_session.metadata["continuation_time"] = datetime.now().isoformat()
-        source_session.metadata["token_count"] = source_token_count
-        
-        # Calculate token count for continuation session
-        continuation_token_count = continuation.total_tokens
-        continuation.metadata["token_count"] = continuation_token_count
-        
-        # Update session index with comprehensive token tracking
-        self.session_index[continuation.id] = {
-            "created_at": continuation.created_at,
-            "last_active": continuation.last_active,
-            "message_count": len(continuation.messages),
-            "title": f"Continuation of {source_session.id[-8:]}",
-            "continued_from": source_session.id,
-            "token_count": continuation_token_count,
-            "source_session_tokens": source_token_count,
-            "total_chain_tokens": continuation_token_count + source_token_count
+
+        # SYSTEM and CONTEXT carry over in full, except earlier markers.
+        pinned = [
+            msg
+            for msg in source_session.messages
+            if msg.category in (MessageCategory.SYSTEM, MessageCategory.CONTEXT)
+            and (msg.metadata or {}).get("type") != "session_transition"
+        ]
+        for msg in pinned:
+            continuation.add_message(msg)
+        continuation.add_message(
+            create_message(
+                role="system",
+                content=(
+                    f"Continuing session {live_id}; earlier history is "
+                    f"archived as {archive.id}."
+                ),
+                category=MessageCategory.SYSTEM,
+                metadata={
+                    "type": "session_transition",
+                    "previous_session": archive.id,
+                    "previous_session_tokens": source_token_count,
+                },
+            )
+        )
+
+        # Recent history, oldest first, starting at a user message so the
+        # carried part does not open on a tool result without its call.
+        history = [
+            msg
+            for msg in source_session.messages
+            if msg.category not in (MessageCategory.SYSTEM, MessageCategory.CONTEXT)
+        ]
+        room = self.max_messages_per_session - len(continuation.messages) - 1
+        carry = max(0, min(room, max(2, self.max_messages_per_session // 10)))
+        tail = history[-carry:] if carry else []
+        for offset, msg in enumerate(tail):
+            if msg.role == "user" and msg.category == MessageCategory.DIALOG:
+                tail = tail[offset:]
+                break
+        for msg in tail:
+            continuation.add_message(msg)
+        carried_calls = {
+            str((msg.metadata or {}).get("tool_call_id") or "") for msg in tail
+        } - {""}
+        for name in ("tool_call_records", "tool_result_records"):
+            setattr(
+                continuation,
+                name,
+                [
+                    record
+                    for record in getattr(source_session, name)
+                    if isinstance(record, dict)
+                    and str(record.get("call_id") or "") in carried_calls
+                ],
+            )
+        continuation.metadata["message_count"] = len(continuation.messages)
+        continuation.metadata["token_count"] = continuation.total_tokens
+
+        # Index: the archive gets its own entry; the live entry is refreshed
+        # by save_session below.
+        live_title = self.session_index.get(live_id, {}).get(
+            "title", f"Session {live_id[-8:]}"
+        )
+        self.session_index[archive.id] = {
+            "created_at": archive.created_at,
+            "last_active": archive.last_active,
+            "message_count": len(archive.messages),
+            "title": f"{live_title} (archived part {continuation.metadata['continuation_index']})",
+            "token_count": source_token_count,
+            "continued_to": live_id,
         }
         self._copy_metadata_to_index_entry(
-            continuation.metadata,
-            self.session_index[continuation.id],
+            archive.metadata, self.session_index[archive.id]
         )
-        
-        # Update source session index entry
-        if source_session.id in self.session_index:
-            self.session_index[source_session.id]["token_count"] = source_token_count
-            self.session_index[source_session.id]["continued_to"] = continuation.id
-        
-        self._save_index(self.session_index)
-        
-        # Add to session cache
-        self._add_to_session_cache(continuation.id, continuation)
+        if live_id in self.session_index:
+            self.session_index[live_id].pop("continued_to", None)
+
+        # The archive is written first: if that fails, nothing is replaced.
+        if not self.save_session(archive):
+            self.session_index.pop(archive.id, None)
+            raise OSError(f"Could not archive session {live_id}; not continuing")
+        self.sessions.pop(archive.id, None)
+        self.sessions[live_id] = (continuation, True)
+        self.sessions.move_to_end(live_id)
         self.current_session = continuation
-        
-        # Log creation with token information
-        logger.info(f"Created continuation session {continuation.id} from {source_session.id} " +
-                    f"(source tokens: {source_token_count}, continuation tokens: {continuation_token_count})")
-        
-        # Save both sessions
-        self.save_session(source_session)
+        self.mark_session_modified(live_id)
         self.save_session(continuation)
-        
+
+        logger.info(
+            f"Continued session {live_id}: archived {len(archive.messages)} messages "
+            f"as {archive.id}, carried {len(tail)} recent messages"
+        )
         return continuation
-    
-    @synchronized_store
-    def _get_continuation_index(self, session_id: str) -> int:
-        """
-        Get the continuation index for a session using the index.
-        
-        Args:
-            session_id: ID of the session to check
-            
-        Returns:
-            Continuation index (1 for first continuation, etc.)
-        """
-        # Use the index to find continuation sessions
-        continuation_count = 0
-        for metadata in self.session_index.values():
-            if metadata.get("continued_from") == session_id:
-                continuation_count += 1
-                
-        return continuation_count + 1
-    
+
     @synchronized_store
     def list_sessions(self, limit: int = 100, offset: int = 0) -> List[Dict]:
         """

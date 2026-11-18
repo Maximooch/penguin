@@ -284,6 +284,10 @@ on its own.
   bound to them as its key always intended. Grants saved before this change
   were keyed with those fields empty, so they stop matching and the user is
   asked once more.
+- SM-111: at the message limit, the live session keeps its id and its recent
+  history, and the older history moves to an archive session with a new id.
+  Before, the continuation got the new id, so `continued_from` now points
+  from the live session to the archive (checkpoint lineage still follows it).
 
 ## Item format
 
@@ -801,8 +805,9 @@ independently.
   - State: (fixed, 2026-11-17) `PRAGMA incremental_vacuum` frees one page per result row read, and the ledger never read them, so deleted rows left free pages and the file never shrank. Measured by file size, the ledger stayed over its 256 MB cap for good and every cleanup deleted all but one row: in the field, 13 rows in a 1.56 GB file (380,877 of 381,358 pages free), so reconnect replay had almost nothing. The vacuum now reads its results, and size cleanup reclaims free pages before measuring, so rows are deleted only for retained data.
 - [x] **SM-110 VCS watcher polls every directory ever used, forever** (b): `penguin/web/services/system_status.py` (`_vcs_watch_loop`), `penguin/web/sse_events.py`.
   - State: (fixed, 2026-11-17) the watcher ran up to seven `git` commands every 2 s for the server's directory and every directory any session had used (`_opencode_session_directories` only grows), with or without a client; on macOS each spawn also prints a MallocStackLogging line, flooding the log. Each SSE connection now registers its directory while open (`watch_vcs_directory` / `unwatch_vcs_directory`), only watched directories are polled, and an unchanged directory backs off from the base interval up to 10 s, resetting on any change. An idle server runs no git.
-- [ ] **SM-111 Sessions past the message limit stop answering** (b) [design]: `penguin/system/conversation.py:233-247`, `penguin/system/session_manager.py` (`check_session_boundary`, `create_continuation_session`).
+- [x] **SM-111 Sessions past the message limit stop answering** (b) [design]: `penguin/system/conversation.py:233-247`, `penguin/system/session_manager.py` (`check_session_boundary`, `create_continuation_session`).
   - Found 2026-11-17 in a 5,002-message TUI session: each prompt loads the original session, adds the message, crosses `PENGUIN_MAX_MESSAGES_PER_SESSION` (5,000), creates a continuation holding only the system prompt and a "Continuing from" note, and builds the request from it, so it goes out with no input (OpenAI 400 `missing_required_parameter`) and the turn ends silently. The next prompt loads the original again and repeats. Needs a decision on what a long session should do.
+  - State: (fixed, 2026-11-17, decided by Maximus: carry history over) `create_continuation_session` now returns a continuation that keeps the source session's id and carries the SYSTEM and CONTEXT messages, a transition marker and the most recent history (a tenth of the limit, starting at a user message, with the tool records those messages use). The full history is archived under a new id first (`continued_from` on the live session, `continued_to` and `archived_from` on the archive); if the archive cannot be written the session is left as it is. Clients that address the session by id keep working. The unused `_get_continuation_index` is deleted.
 
 ## Changes on main since the sweep
 
@@ -1109,3 +1114,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 
 - SM-109: fixed (2026-11-17). `pytest -q tests/api/test_runtime_event_ledger_vacuum.py`: 2 passed, both red before the fix (free pages kept; a bloated file lost its events); ledger and SSE test files: 32 passed.
 - SM-110: fixed (2026-11-17). `pytest -q tests/api/test_vcs_watcher_bounds.py`: 3 passed, all red before the fix; two watcher tests in `test_vcs_status_service.py` updated to register a watching client; every SSE, status and VCS test file: 143 passed.
+- SM-111: fixed (2026-11-17). `pytest -q tests/system/test_session_rollover_history.py`: 2 passed, both red before the fix; session, conversation, checkpoint, multi-agent, engine and ACP session test files: 55 files, no failures. Replayed on a copy of the 5,003-message session: 488 live messages under the same id, request has input.
