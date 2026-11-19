@@ -10,6 +10,7 @@ from fastapi import (
     Response,
     UploadFile,
     File,
+    Header,
     Query,
 )  # type: ignore
 from pydantic import BaseModel, ValidationError  # type: ignore
@@ -1650,6 +1651,13 @@ class ApprovalAction(BaseModel):
 
     scope: str = "once"  # once | session | pattern
     pattern: Optional[str] = None  # Required if scope is "pattern"
+    session_id: Optional[str] = None  # The session the reply comes from
+
+
+class ApprovalDenyAction(BaseModel):
+    """Request body for denying a request."""
+
+    session_id: Optional[str] = None  # The session the reply comes from
 
 
 class PreApprovalRequest(BaseModel):
@@ -1666,6 +1674,7 @@ class PermissionReplyAction(BaseModel):
 
     reply: str  # once | always | reject
     message: Optional[str] = None
+    sessionID: Optional[str] = None  # The session the reply comes from
 
 
 class QuestionReplyAction(BaseModel):
@@ -8153,6 +8162,23 @@ async def update_session_access_settings(
     return update_access_settings(core, session_id, request.mode)
 
 
+def _authorize_permission_reply(request_id: str, *claimed_sessions: Any) -> None:
+    """Refuse (403 / 400) a reply that is not from the request's session."""
+    from penguin.web.services.permission_replies import (
+        PermissionReplyRefused,
+        authorize_permission_reply,
+    )
+
+    try:
+        authorize_permission_reply(
+            _get_approval_manager().get_request(request_id), *claimed_sessions
+        )
+    except PermissionReplyRefused as refused:
+        raise HTTPException(
+            status_code=refused.status_code, detail=str(refused)
+        ) from refused
+
+
 @router.get("/permission")
 @router.get("/api/v1/permission")
 async def list_pending_permissions(
@@ -8179,6 +8205,7 @@ async def list_pending_permissions(
 async def reply_permission_request(
     request_id: str,
     action: PermissionReplyAction,
+    x_penguin_session_id: Optional[str] = Header(None),
 ):
     """Reply to a pending permission request.
 
@@ -8196,6 +8223,9 @@ async def reply_permission_request(
                 detail=f"Permission request not found: {request_id}",
             )
 
+        _authorize_permission_reply(
+            request_id, action.sessionID, x_penguin_session_id
+        )
         existing_dict = existing.to_dict()
         if existing_dict.get("status") != "pending":
             return True
@@ -8515,6 +8545,7 @@ async def get_approval_request(request_id: str):
 async def approve_request(
     request_id: str,
     action: ApprovalAction = ApprovalAction(),
+    x_penguin_session_id: Optional[str] = Header(None),
 ):
     """Approve a pending approval request.
 
@@ -8550,6 +8581,9 @@ async def approve_request(
                 status_code=400, detail="Pattern is required when scope is 'pattern'"
             )
 
+        _authorize_permission_reply(
+            request_id, action.session_id, x_penguin_session_id
+        )
         result = manager.approve(request_id, scope=scope, pattern=action.pattern)
 
         if result is None:
@@ -8574,7 +8608,11 @@ async def approve_request(
 
 
 @router.post("/api/v1/approvals/{request_id}/deny")
-async def deny_request(request_id: str):
+async def deny_request(
+    request_id: str,
+    action: ApprovalDenyAction = ApprovalDenyAction(),
+    x_penguin_session_id: Optional[str] = Header(None),
+):
     """Deny a pending approval request.
 
     Args:
@@ -8586,6 +8624,9 @@ async def deny_request(request_id: str):
     try:
         _setup_approval_websocket_callbacks()
         manager = _get_approval_manager()
+        _authorize_permission_reply(
+            request_id, action.session_id, x_penguin_session_id
+        )
         result = manager.deny(request_id)
 
         if result is None:

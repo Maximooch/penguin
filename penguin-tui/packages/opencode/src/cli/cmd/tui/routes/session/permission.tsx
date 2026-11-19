@@ -133,6 +133,12 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
 
   const session = createMemo(() => sync.data.session.find((s) => s.id === props.request.sessionID))
 
+  // Penguin refuses a reply that names a different session than the request's.
+  const replyToPermission = (reply: Parameters<typeof sdk.client.permission.reply>[0]) =>
+    sdk.client.permission.reply(reply, {
+      headers: { "x-penguin-session-id": props.request.sessionID },
+    })
+
   const input = createMemo(() => {
     const tool = props.request.tool
     if (!tool) return props.request.metadata ?? {}
@@ -188,7 +194,7 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
           onSelect={(option) => {
             setStore("stage", "permission")
             if (option === "cancel") return
-            sdk.client.permission.reply({
+            replyToPermission({
               reply: "always",
               requestID: props.request.id,
             })
@@ -198,7 +204,7 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
       <Match when={store.stage === "reject"}>
         <RejectPrompt
           onConfirm={(message) => {
-            sdk.client.permission.reply({
+            replyToPermission({
               reply: "reject",
               requestID: props.request.id,
               message: message || undefined,
@@ -302,13 +308,13 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
                     setStore("stage", "reject")
                     return
                   }
-                  sdk.client.permission.reply({
+                  replyToPermission({
                     reply: "reject",
                     requestID: props.request.id,
                   })
                   return
                 }
-                sdk.client.permission.reply({
+                replyToPermission({
                   reply: "once",
                   requestID: props.request.id,
                 })

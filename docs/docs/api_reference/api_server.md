@@ -1409,9 +1409,13 @@ Approve a pending permission request.
 **Request Body:**
 ```json
 {
-  "scope": "session"
+  "scope": "session",
+  "session_id": "session_20261119_101500_ab12cd34"
 }
 ```
+
+`session_id` is the session the reply comes from. See
+[Session ownership](#session-ownership-of-replies).
 
 **Scope Options:**
 - `once`: Approve this single request only
@@ -1431,6 +1435,13 @@ Approve a pending permission request.
 
 Deny a pending permission request.
 
+**Request Body (optional):**
+```json
+{
+  "session_id": "session_20261119_101500_ab12cd34"
+}
+```
+
 **Response:**
 ```json
 {
@@ -1438,6 +1449,25 @@ Deny a pending permission request.
   "request_id": "apr_xyz789"
 }
 ```
+
+#### Session ownership of replies
+
+A pending request belongs to the session that raised it. A reply names its
+session in one of these places:
+
+- `session_id` in the body of `/api/v1/approvals/{request_id}/approve` and
+  `/deny`
+- `sessionID` in the body of `/api/v1/permission/{request_id}/reply`
+- the `X-Penguin-Session-Id` header, on any of the three
+
+If the reply names a different session than the request's, the server answers
+`403` and the request stays pending. If the reply names no session, the server
+accepts it, unless `PENGUIN_PERMISSION_REPLY_REQUIRE_SESSION=true` is set; then
+it answers `400`.
+
+The session is a claim made by the client. All clients of one server share its
+credential, so this check stops a client from answering a request it was not
+shown; it is not authentication between clients.
 
 #### POST `/api/v1/approvals/pre-approve`
 

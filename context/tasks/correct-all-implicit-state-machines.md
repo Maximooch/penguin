@@ -373,7 +373,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     replies, the two endpoints' disagreement on resolved requests and scopes,
     and the dead `_approval_ws_manager`. The ownership check is a security
     boundary and needs the reviewer's decision on the client API change.
-  - State: event delivery is fixed. On hold: neither reply endpoint checks
+  - (2026-11-19, decided by Maximus: add it) Session ownership is checked: `penguin/web/services/permission_replies.py` (`authorize_permission_reply`) runs before all three reply endpoints resolve a request. A reply names its session in the body (`sessionID` on `/permission/{id}/reply`, `session_id` on `/approvals/{id}/approve` and `/deny`) or in the `X-Penguin-Session-Id` header; a reply naming another session gets 403 and the request stays pending. A reply naming no session is still accepted, so Link (which posts none) keeps working; `PENGUIN_PERMISSION_REPLY_REQUIRE_SESSION=true` refuses those with 400. The TUI sends the header. The session is a client claim, not an authenticated identity: all clients share one credential. Still open: the two endpoints differ on an already-resolved request (`True` versus 404) and on scopes offered; `_approval_ws_manager.connect()` is never called; Link should send `session_id`, after which the requirement can become the default.
+  - Earlier state: event delivery is fixed. Was on hold: neither reply endpoint checks
     that the request belongs to the caller's session (needs the client to send
     a session id, an API change); the two endpoints still differ on an
     already-resolved request (`True` versus 404) and on scopes offered;
@@ -1126,3 +1127,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-10: fixed (2026-11-19). `pytest -q tests/core_runtime/test_process_retry_after_turn_start.py`: 2 passed; the after-turn-start case red before the fix (turn ran three times). `tests/core_runtime`: 449 passed.
 - SM-30 (rest): fixed (2026-11-19). `pytest -q tests/test_runmode_continuous_termination.py`: 8 passed; the six new cases hung before the fix (the loop never yielded, so the test timeout could not fire). RunMode test files: 67 passed.
 - SM-58 (failed start), MCP loopback check, `run_agent_turn`: fixed (2026-11-19). `pytest -q tests/tools/test_pydoll_failed_start.py tests/test_mcp_isolation.py tests/test_engine_loop_termination.py`; the new cases red before each fix.
+- SM-05 (ownership): fixed (2026-11-19). `pytest -q tests/api/test_permission_reply_session_ownership.py`: 7 passed, 6 red before the fix (the seventh is the over-HTTP check). Approval and route test files: 419 passed, plus the 2 known CLI audit failures. TUI `tsgo --noEmit` passes.
