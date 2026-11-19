@@ -1618,11 +1618,16 @@ class ActionExecutor:
             ]
         return diagnostics
 
-    def _capability_denial(self, action_name: str) -> Optional[str]:
+    def capability_denial(self, action_name: str) -> Optional[str]:
         """Return a denial when the startup capability policy excludes an action.
 
         Some action handlers do not go through ``ToolManager.execute_tool``, so
         the policy is applied here, before any handler runs.
+
+        Callers that record a result status must call this first and record a
+        denial as an error: ``execute_action`` returns the denial as text, and
+        text alone reads as a completed action (a denied ``finish_task`` would
+        end the task).
         """
 
         policy = getattr(self.tool_manager, "tool_capability_policy", None)
@@ -1658,7 +1663,7 @@ class ActionExecutor:
         import uuid
 
         action_id = str(uuid.uuid4())[:8]
-        denial = self._capability_denial(action.action_type.value)
+        denial = self.capability_denial(action.action_type.value)
         if denial is not None:
             return denial
         handler_params = self._prepare_action_params(action, action_id)

@@ -77,5 +77,6 @@ jobs:
           tests/test_approval_context_binding.py
           tests/test_audit_logger_isolation.py
           tests/test_runtime_security_mode.py
+          tests/test_denied_control_actions.py
           tests/test_mcp_provider_closed.py
           tests/test_runmode_ws_session_scope.py
