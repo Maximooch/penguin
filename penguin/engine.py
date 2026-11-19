@@ -3957,7 +3957,7 @@ class Engine:
     ):
         return await self.run_single_turn(
             prompt,
-            image_path=image_path,
+            image_paths=[image_path] if image_path else None,
             tools_enabled=tools_enabled,
             streaming=streaming,
             stream_callback=stream_callback,

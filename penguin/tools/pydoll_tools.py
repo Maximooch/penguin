@@ -119,6 +119,16 @@ class PyDollBrowserManager:
                 if self.dev_mode:
                     # Show more detailed error info in dev mode
                     logging.error(f"Detailed error: {e}", exc_info=True)
+                # Drop the half-made browser, so the next call starts again
+                # instead of taking this one for a running browser.
+                failed_browser, self.browser = self.browser, None
+                self.page = None
+                self.initialized = False
+                if failed_browser is not None:
+                    try:
+                        await failed_browser.stop()
+                    except Exception:
+                        logging.debug("Stopping a failed browser failed", exc_info=True)
                 return False
         
         # Start cleanup timer for inactive browser instances

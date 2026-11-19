@@ -660,7 +660,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - State: (partial, 2026-11-15) fixed: each pending authorization gets a `flow_id`, and a completed callback (browser listener or explicit callback) removes the provider's pending entry only if it still holds that flow, so a newer authorization started meanwhile keeps working; the recent-completion fast path now applies only to a caller waiting for the browser flow (no code), so a pasted stale code fails instead of reporting success. Kept: one pending slot per provider (a new authorize replaces the old one by design). Still open: the browser-callback listener binds one host (its TODO), so a `localhost` redirect can miss a `127.0.0.1` listener.
 - [x] **SM-50 OpenAI OAuth resolve and refresh** (b): `penguin/llm/adapters/openai.py:1019-1145`; resolve and peek duplicate env parsing; refresh writes process-wide state unlocked.
   - State: (done, 2026-11-15) request preparation and the request read OAuth credentials the same way: a stored OAuth record wins, otherwise the environment, parsed once by `_oauth_record_from_env`. Before, preparation skipped a stored record without an access token and routed on an environment token, while the request used the stored record and failed. Not changed: `_apply_oauth_record_to_runtime` still writes `os.environ` and `model_config.api_key`; on one event loop a read that needs no refresh is applied without awaiting, so a stale token cannot overwrite a newer one, and `refresh_provider_oauth` already refreshes once under a lock. Writing to shared config belongs to the ModelConfig ownership decision (SM-35).
-- [ ] **SM-51 ACP session turn** (stale 2026-11-13: `cancel` on main now captures `session.task` before awaiting, so the `None.cancel()` path is gone) (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
+- [x] **SM-51 ACP session turn** (closed as stale, 2026-11-19; stale since 2026-11-13: `cancel` on main now captures `session.task` before awaiting, so the `None.cancel()` path is gone) (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
 - [x] **SM-52 Run-mode task WebSocket** (b): `penguin/web/routes.py:6682-6886`; `core._temp_ws_callback` is a single slot.
   - State: (partial, 2026-11-15) fixed: the run-mode task WebSocket's event callback is now an argument of `start_run_mode` (`websocket_event_callback`); the RunMode lifecycle installs it in `_temp_ws_callback` after its busy check and clears it in its own cleanup. Before, the route set the slot before starting, so a second socket took over the running task's events (its own start then failed with `RunModeBusyError`) and either socket's exit deleted the slot. (2026-11-17) Also fixed: the stream finalizer sends a finalized message to the RunMode socket only from inside that run (a context variable set by `start_run_mode` and inherited by the run's tasks); before, it forwarded every session's finalized messages while the slot was set, a cross-session data leak.
 - [x] **SM-53 Sub-agent registry** (b): `penguin/system/conversation_manager.py:224-240,340,501-582,1598`; removing the current agent leaves three "current" pointers stale.
@@ -674,7 +674,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [x] **SM-57 File-root / execution mode** (b): `penguin/tools/tool_manager.py:4030-4166`, `penguin/config.py:532,597`; three writers disagree on env vars and the notebook directory.
   - State: (done, 2026-11-15) one method, `ToolManager._use_file_root`, now sets the active file root, `PENGUIN_WRITE_ROOT`, `PENGUIN_CWD`, the notebook executor's directory and the file map; `set_execution_root` and every RuntimeConfig change (project root, workspace root, execution mode) go through it. Before, a root change from RuntimeConfig left the notebook executor in the old directory. `RuntimeConfig.set_project_root` and `set_workspace_root` now set `PENGUIN_CWD` to the active root; before, a project-root change in workspace mode pointed it at the project root, and a workspace-root change did not update it.
 - [x] **SM-58 PyDoll browser session** (b): `penguin/tools/pydoll_tools.py:14-201`; (browser set, not initialized) is reachable; a dead cleanup task blocks the idle timer.
-  - State: a finished idle-timer task no longer blocks a new one. Still open: a failed `start()` leaves (browser set, not initialized), which the next `initialize` treats as ready; the idle worker awaits its own cancellation in `close()`; no lock around `initialize`.
+  - State: a finished idle-timer task no longer blocks a new one. (2026-11-19) Also fixed: a failed `start()` left (browser set, not initialized), which the next `initialize` took for a running browser and reported success; the half-made browser is now stopped and dropped, so the next call starts again. Still open: the idle worker awaits its own cancellation in `close()`; no lock around `initialize`.
 - [x] **SM-59 Browser-harness daemon identity** (c): `penguin/tools/browser_harness_tools.py:24,264-426`, `penguin/tools/browser_harness_ownership.py:81`; cleanup runs without the helpers lock.
   - State: (done, 2026-11-15) `BrowserHarnessAdapter.cleanup` now holds `_HELPERS_LOCK` like every other harness call. It reloads the harness modules for its target daemon and rewrites `BU_NAME` in the process environment, so without the lock it could repoint a helper call in progress at another daemon, and its ownership-file read-modify-write could interleave with `record_started`. Not changed: the ownership file is still shared between Penguin processes without a file lock.
 - [x] **SM-60 Lazy tool loading** (b): `penguin/tools/tool_manager.py:278,2231-2907,6355`; check-then-set with no lock on worker threads.
@@ -839,15 +839,15 @@ Not verified. Fold into SM-03 when it is worked.
 
 ## Seen in passing, not state machines
 
-- `run_agent_turn` passes `image_path=` but `run_single_turn` accepts only
-  `image_paths` (`penguin/engine.py:4013`). Unconfirmed.
+- (fixed, 2026-11-19) `run_agent_turn` passed `image_path=` but `run_single_turn` accepts only
+  `image_paths`, so every call raised `TypeError`. It now passes `image_paths=[image_path]`.
 - Test files live in source directories: `penguin/cli/test_tui_*.py`,
   `penguin/utils/test_*.py`, `penguin/local_task/test_manager.py`.
 - Two `CommandRegistry` classes: `penguin/cli/commands.py:63` and
   `penguin/cli/command_registry.py:81`.
-- `penguin/security/mcp_isolation.py:28` accepts `http://127.0.0.1:1@other.host/`
-  as local (prefix check, not a parsed hostname). The value is set by the
-  harness through an environment variable. Unconfirmed.
+- (fixed, 2026-11-19) `penguin/security/mcp_isolation.py` accepted `http://127.0.0.1:1@other.host/`
+  as local (prefix check, not a parsed hostname). Confirmed; the URL is now parsed and must have
+  scheme `http`, host `127.0.0.1`, a port and no user info.
 - `penguin/llm/adapters/modal.py:35-50` and `runinfra.py:44-60` copy
   `OpenRouterGateway`'s per-request fields by hand (next to SM-35).
 - A root change rebuilds the tool manager's file map synchronously over the
@@ -1124,3 +1124,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-23: fixed (2026-11-19). `pytest -q tests/system/test_session_rollover_history.py`: 6 passed; the long-tool-run case over four alignments, two red before the fix.
 - SM-10: fixed (2026-11-19). `pytest -q tests/core_runtime/test_process_retry_after_turn_start.py`: 2 passed; the after-turn-start case red before the fix (turn ran three times). `tests/core_runtime`: 449 passed.
 - SM-30 (rest): fixed (2026-11-19). `pytest -q tests/test_runmode_continuous_termination.py`: 8 passed; the six new cases hung before the fix (the loop never yielded, so the test timeout could not fire). RunMode test files: 67 passed.
+- SM-58 (failed start), MCP loopback check, `run_agent_turn`: fixed (2026-11-19). `pytest -q tests/tools/test_pydoll_failed_start.py tests/test_mcp_isolation.py tests/test_engine_loop_termination.py`; the new cases red before each fix.

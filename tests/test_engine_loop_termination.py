@@ -211,3 +211,22 @@ async def test_echoed_tool_results_stop_with_their_own_status(mode: str) -> None
     result = await _run(engine, mode)
 
     assert result["status"] == "tool_result_echo"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_turn_passes_its_image_as_image_paths() -> None:
+    """It passed ``image_path=``, which ``run_single_turn`` does not accept."""
+    from penguin.engine import Engine
+
+    engine = Engine.__new__(Engine)
+    seen: dict[str, object] = {}
+
+    async def run_single_turn(prompt: str, **kwargs: object) -> str:
+        seen.update(kwargs, prompt=prompt)
+        return "ok"
+
+    engine.run_single_turn = run_single_turn  # type: ignore[method-assign]
+
+    assert await engine.run_agent_turn("a1", "look", image_path="/tmp/x.png") == "ok"
+    assert seen["image_paths"] == ["/tmp/x.png"]
+    assert "image_path" not in seen and seen["agent_id"] == "a1"
