@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from penguin.system.conversation import ConversationSystem
 from penguin.system.session_manager import SessionManager
 from penguin.system.state import MessageCategory
@@ -75,3 +77,42 @@ def test_a_client_reloading_the_session_gets_the_live_history(tmp_path: Path) ->
     contents = [str(message["content"]) for message in request]
     assert again.session.id == session_id
     assert "continue" in contents and "message 29" in contents
+
+
+@pytest.mark.parametrize("lead_in", [0, 1, 2, 3])
+def test_rollover_in_a_long_tool_run_keeps_calls_with_their_results(
+    tmp_path: Path, lead_in: int
+) -> None:
+    """SM-23: a rollover between a tool call and its result must not split them.
+
+    A long autonomous run has no user message in the carried window, so the
+    window must not open on a tool result whose call was left in the archive.
+    """
+    conversation, _store = _conversation(tmp_path)
+    conversation.add_message("user", "do the work", MessageCategory.DIALOG)
+    for index in range(lead_in):  # shift where the limit falls in a call group
+        conversation.add_message("assistant", f"note {index}", MessageCategory.DIALOG)
+    for index in range(40):
+        conversation.add_message("assistant", f"step {index}", MessageCategory.DIALOG)
+        conversation.add_action_result(
+            "execute", f"output {index}", tool_call_id=f"call_{index}"
+        )
+
+    live = conversation.session
+    history = [m for m in live.messages if m.category is not MessageCategory.SYSTEM]
+    assert history and history[0].role != "tool"
+    assert history[-1].content == "output 39"
+
+    declared: set[str] = set()
+    recorded = {record["call_id"] for record in live.tool_call_records}
+    for message in history:
+        for call in (message.metadata or {}).get("tool_calls", []):
+            declared.add(call["id"])
+        if message.role == "tool":
+            call_id = message.metadata["tool_call_id"]
+            assert call_id in declared, f"{call_id} has no call before it"
+            assert call_id in recorded
+
+    request = conversation.get_formatted_messages()
+    tool_ids = [m["tool_call_id"] for m in request if m.get("role") == "tool"]
+    assert tool_ids and tool_ids[-1] == "call_39"

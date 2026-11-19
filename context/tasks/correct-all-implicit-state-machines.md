@@ -429,11 +429,12 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     new id is still reported to the caller as a successful load of the
     requested id (changing that changes what `conversation.load` returns);
     the index/file ordering on delete and continuation is unchanged.
-- [ ] **SM-10 `process()` retry envelope** (on hold: inferred only, not reproduced; needs a trace of `process` to show a retry after tools ran) (b) [inferred]
+- [x] **SM-10 `process()` retry envelope** (b)
   - `penguin/core_runtime/process_runtime.py:42-310`
   - A failure in the error emit after the engine ran tools may re-run the
     whole turn, re-adding the user message and re-running tools.
   - Correction: retry only before the engine has started.
+  - State: (fixed, 2026-11-19) reproduced: `process` handles its own errors, so only a failure in `handle_process_error` (its UI emit) or in the `finally` cleanup reaches the retry wrapper, and the whole turn then ran three times, saving the user message and running tools each time. An exception that escapes after the user message is saved is now marked and not retried; `process_with_retry` returns it, as it does on retry exhaustion. Failures before the turn starts are still retried.
 - [x] **SM-11 GitHub webhook delivery** (b/c) [security]
   - `penguin/web/integrations/github_webhook.py:30-81,269,286-343,455,647`
   - No sender filter, and the bot's own completion comment contains an
@@ -564,12 +565,13 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     serialised at dequeue time. Workers can start in a throwaway loop with
     `_workers_started` left True. An index load error resets the index.
   - State: (done, 2026-11-15) a returned checkpoint id now names a file that exists: `create_checkpoint` snapshots the session when called, writes the file on a worker thread (under a temporary name, renamed when complete) and returns the id only after that, or None if the write failed (the web route already turns None into a 500). Automatic checkpoints from `ConversationSystem.add_message` go through `checkpoint_in_background`, which snapshots before returning, so a checkpoint holds the conversation as of its triggering message. The queue and workers are deleted, so there is nothing left to start in a throwaway loop. An unreadable index is set aside and rebuilt from the checkpoint files; a bad entry is skipped. `tests/system/test_log_inspired_checkpoint_lifecycle.py` tested the deleted workers and is removed; its two cases (a manager reused on a new event loop, a failed write) are covered by the new tests.
-- [ ] **SM-23 Session boundary rollover** (b) (on hold: re-read 2026-11-13. `add_tool_result` attaches `tool_calls` to the last assistant message only when the result arrives, so at rollover time nothing marks the assistant message as awaiting results. Deferring rollover needs a new signal from the engine that a tool group is open; that is a design change.)
+- [x] **SM-23 Session boundary rollover** (b) (was on hold: re-read 2026-11-13. `add_tool_result` attaches `tool_calls` to the last assistant message only when the result arrives, so at rollover time nothing marks the assistant message as awaiting results. Deferring rollover needs a new signal from the engine that a tool group is open; that is a design change.)
   - `penguin/system/conversation.py:256-269,677`,
     `penguin/system/session_manager.py:578-625`,
     `penguin/system/context_epoch.py:136`
   - Rollover can fire between a tool call and its result.
   - Correction: defer rollover while a tool group is open.
+  - State: (fixed, 2026-11-19, a different correction) since SM-111 the continuation keeps the session id and carries recent history, so a rollover after an assistant message no longer loses the message its tool results attach to. One case was left and is fixed here: in a long tool run with no user message in the carried window, the window could open on a tool result whose call stayed in the archive. The window now walks back to the assistant message that made the call (or, with no room, skips the orphaned results).
 - [x] **SM-24 Managed process lifecycle** (c)
   - `penguin/tools/process_runtime.py:45-651`
   - `completion_reason` is written from two threads. `stop` can signal a
@@ -1119,3 +1121,5 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-110: fixed (2026-11-17). `pytest -q tests/api/test_vcs_watcher_bounds.py`: 3 passed, all red before the fix; two watcher tests in `test_vcs_status_service.py` updated to register a watching client; every SSE, status and VCS test file: 143 passed.
 - SM-111: fixed (2026-11-17). `pytest -q tests/system/test_session_rollover_history.py`: 2 passed, both red before the fix; session, conversation, checkpoint, multi-agent, engine and ACP session test files: 55 files, no failures. Replayed on a copy of the 5,003-message session: 488 live messages under the same id, request has input.
 - SM-112: fixed (2026-11-19). `pytest -q tests/test_denied_control_actions.py`: 6 passed (denied and allowed, ActionXML `finish_task` / `finish_response` and native `finish_task`); the three denied cases red before the fix. Two new cases in `tests/core_runtime/test_action_execution.py`. Tool, engine, permission and action test files: 443 passed.
+- SM-23: fixed (2026-11-19). `pytest -q tests/system/test_session_rollover_history.py`: 6 passed; the long-tool-run case over four alignments, two red before the fix.
+- SM-10: fixed (2026-11-19). `pytest -q tests/core_runtime/test_process_retry_after_turn_start.py`: 2 passed; the after-turn-start case red before the fix (turn ran three times). `tests/core_runtime`: 449 passed.

@@ -745,11 +745,25 @@ class SessionManager:
         ]
         room = self.max_messages_per_session - len(continuation.messages) - 1
         carry = max(0, min(room, max(2, self.max_messages_per_session // 10)))
-        tail = history[-carry:] if carry else []
-        for offset, msg in enumerate(tail):
+        start = len(history) - carry if carry else len(history)
+        for index in range(start, len(history)):
+            msg = history[index]
             if msg.role == "user" and msg.category == MessageCategory.DIALOG:
-                tail = tail[offset:]
+                start = index
                 break
+        else:
+            # No user message in the window (a long tool run). A tool result
+            # must follow its call: walk back to the assistant message that
+            # made it, or, with no room left, skip the orphaned results.
+            while (
+                0 < start < len(history)
+                and history[start].role == "tool"
+                and len(history) - start < room
+            ):
+                start -= 1
+            while start < len(history) and history[start].role == "tool":
+                start += 1
+        tail = history[start:]
         for msg in tail:
             continuation.add_message(msg)
         carried_calls = {
