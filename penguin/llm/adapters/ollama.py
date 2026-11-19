@@ -3,7 +3,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import ollama  # type: ignore
 
+from ..contracts import FinishReason
 from ..model_config import ModelConfig
+from ..provider_transform import normalize_finish_reason
+from ...utils.callbacks import adapt_stream_callback
 from ...utils.diagnostics import diagnostics
 from .base import BaseAdapter
 
@@ -17,6 +20,7 @@ class OllamaAdapter(BaseAdapter):
         self.model_config = model_config
         base_url = model_config.api_base or "http://localhost:11434"
         self.client = ollama.AsyncClient(host=base_url)
+        self._last_finish_reason = FinishReason.UNKNOWN
 
     @property
     def provider(self) -> str:
@@ -35,6 +39,15 @@ class OllamaAdapter(BaseAdapter):
 
     def count_tokens(self, text: str) -> int:
         return diagnostics.count_tokens(text)
+
+    def get_last_finish_reason(self) -> FinishReason:
+        """Return why the last reply ended; UNKNOWN if the stream never finished."""
+        return self._last_finish_reason
+
+    def _record_finish(self, chunk: Any) -> None:
+        get = getattr(chunk, "get", None)
+        if callable(get) and get("done"):
+            self._last_finish_reason = normalize_finish_reason(get("done_reason"))
 
     async def create_completion(
         self,
@@ -62,18 +75,21 @@ class OllamaAdapter(BaseAdapter):
             "options": options or None,
         }
 
+        self._last_finish_reason = FinishReason.UNKNOWN
         if stream:
             response = await self.client.chat(**params)
+            last_chunk = None
             async for chunk in response:
+                last_chunk = chunk
                 text = chunk.get("message", {}).get("content", "")
-                # Debug: log the raw chunk to see formatting
-                # logger.debug(f"Ollama chunk received: {repr(text)} (length: {len(text) if text else 0})")
                 # Always call the callback, even for empty chunks, as they might contain formatting
                 if stream_callback:
                     await stream_callback(text)
-            return chunk
-        else:
-            return await self.client.chat(**params)
+                self._record_finish(chunk)
+            return last_chunk
+        reply = await self.client.chat(**params)
+        self._record_finish(reply)
+        return reply
 
     async def get_response(
         self,
@@ -86,11 +102,14 @@ class OllamaAdapter(BaseAdapter):
     ) -> str:
         if stream:
             collected: List[str] = []
+            # APIClient passes a (chunk, message_type) callback; direct callers
+            # may pass a one-argument one.
+            on_chunk = adapt_stream_callback(stream_callback) if stream_callback else None
 
             async def _cb(chunk: str):
                 collected.append(chunk)
-                if stream_callback:
-                    await stream_callback(chunk)
+                if on_chunk:
+                    await on_chunk(chunk, "assistant")
 
             await self.create_completion(
                 messages,

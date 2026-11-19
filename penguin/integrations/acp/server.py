@@ -79,6 +79,8 @@ from penguin.tools.providers.client import client_tool_scope
 from penguin.tools.providers.mcp import mcp_provider_scope
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from acp.interfaces import Client
 
 logger = logging.getLogger(__name__)
@@ -99,6 +101,12 @@ class Session:
     filesystem: str = "local"
     terminal: bool = False
     shell: str = DEFAULT_SHELL
+    closing: bool = False
+
+    @property
+    def busy(self) -> bool:
+        """A turn is running or queued, or the session is being closed."""
+        return self.task is not None or self.closing
 
 
 class PenguinACPAgent:
@@ -146,6 +154,8 @@ class PenguinACPAgent:
         self._transport = None
         self._children = ChildTracker(self)
         self._processes = ProcessTracker(self)
+        # Called with a closed root once its last background process ends.
+        self.on_root_resolved: Callable[[str], None] | None = None
         self._questions = QuestionBridge(self)
         self._grants = ExactGrants(self)
 
@@ -347,7 +357,7 @@ class PenguinACPAgent:
 
     def _idle_session(self, sid: str) -> Session:
         session = self.sessions.get(sid)
-        if session is None or session.task is not None:
+        if session is None or session.busy:
             raise RequestError.invalid_request({"reason": "Session is missing or busy"})
         return session
 
@@ -589,41 +599,75 @@ class PenguinACPAgent:
         session = self.sessions.get(session_id)
         if session is None:
             raise RequestError.invalid_params({"reason": "Session is not open"})
-        task = session.task
-        if task is not None:
-            await self.cancel(session_id)
-            await asyncio.shield(task)
-        await self._children.close_root(session_id)
-        if session.mcp_provider is not None:
-            await asyncio.to_thread(session.mcp_provider.close)
-        self.sessions.pop(session_id, None)
-        self._grants.close(session_id)
-        for child_id, child in self._children.children.items():
-            if child.root == session_id:
-                self._grants.close(child_id)
+        if session.closing:
+            raise RequestError.invalid_request({"reason": "Session is closing"})
+        # Marked before the first await: prompt and load refuse a closing
+        # session, so nothing else can start on it or replace it meanwhile.
+        session.closing = True
+        try:
+            task = session.task
+            if task is not None:
+                await self.cancel(session_id)
+                await asyncio.shield(task)
+            await self._children.close_root(session_id)
+            if session.mcp_provider is not None:
+                await asyncio.to_thread(session.mcp_provider.close)
+        finally:
+            if self.sessions.get(session_id) is session:
+                self.sessions.pop(session_id)
+            self._grants.close(session_id)
+            for child_id, child in self._children.children.items():
+                if child.root == session_id:
+                    self._grants.close(child_id)
+            self._forget_root(session_id)
         return CloseSessionResponse()
+
+    def _forget_root(self, root: str, *, deleted: bool = False) -> None:
+        """Drop bookkeeping for a closed root and its finished children.
+
+        Active children (not cancellable) keep their records. Process states
+        stay while the session exists, since they decide whether it still has
+        unresolved background work; a delete drops them too.
+        """
+        finished = [
+            sid
+            for sid, child in self._children.children.items()
+            if child.root == root and not child.active
+        ]
+        for sid in finished:
+            self._children.children.pop(sid, None)
+            self._children.replay_parents.pop(sid, None)
+        for sid in (root, *finished):
+            lock = self._approval_state_locks.get(sid)
+            if lock is not None and not lock.locked():
+                self._approval_state_locks.pop(sid, None)
+            if not self._approval_tasks_by_session.get(sid):
+                self._approval_tasks_by_session.pop(sid, None)
+            if not self._questions.tasks.get(sid):
+                self._questions.tasks.pop(sid, None)
+        if deleted:
+            owned = {root, *finished}
+            for key in [key for key in self._processes.states if key[0] in owned]:
+                self._processes.states.pop(key, None)
 
     async def delete_session(self, session_id: str) -> DeleteSessionResponse:
         """Delete only indexed ACP-owned history; reject all busy sessions."""
         if not self._registry.available:
             raise RequestError.method_not_found("session/delete")
         active = self.sessions.get(session_id)
-        if active and active.task is not None:
+        if active and active.busy:
             raise RequestError.invalid_request({"reason": "Session is busy"})
         async with self._process_gate:
             session = self._registry.get(session_id)
             if session is None or self._registry.cwd(session) is None:
                 raise RequestError.invalid_params({"reason": "Unknown owned session"})
             active = self.sessions.get(session_id)
-            if (active and active.task is not None) or any(
+            if (active and active.busy) or any(
                 child.root == session_id and child.active
                 for child in self._children.children.values()
             ):
                 raise RequestError.invalid_request({"reason": "Session is busy"})
-            if any(
-                sid == session_id and not state.get("completed")
-                for (sid, _), state in self._processes.states.items()
-            ):
+            if self._processes.unresolved(session_id):
                 raise RequestError.invalid_request(
                     {"reason": "Session has an unresolved background process"}
                 )
@@ -633,20 +677,23 @@ class PenguinACPAgent:
             for path in (assets, journal):
                 if not path.resolve().is_relative_to(base):
                     raise RequestError.invalid_params({"reason": "Unsafe storage path"})
-            if active is not None:
-                await self.close_session(session_id)
             delete = getattr(
                 self.core.conversation_manager,
                 "delete_conversation",
                 self._registry.store.delete_session,
             )
+            # Delete first: if it fails the session stays open, as the error
+            # tells the client. Nothing runs on it while this holds the gate.
             if not delete(session_id):
                 raise RequestError.internal_error(
                     {"reason": "Could not delete session"}
                 )
+            if active is not None:
+                await self.close_session(session_id)
             journal.unlink(missing_ok=True)
             if assets.exists():
                 shutil.rmtree(assets)
+            self._forget_root(session_id, deleted=True)
         return DeleteSessionResponse()
 
     async def _delete_request(self, params: Any) -> DeleteSessionResponse:
@@ -683,7 +730,7 @@ class PenguinACPAgent:
         if self._connection is None:
             raise RequestError.internal_error()
         active = self.sessions.get(session_id)
-        if active and active.task is not None:
+        if active and active.busy:
             raise RequestError.invalid_request({"reason": "Session is busy"})
         async with self._process_gate:
             saved = self._registry.get(session_id)
@@ -696,7 +743,7 @@ class PenguinACPAgent:
                 raise RequestError.invalid_params(
                     {"reason": "Session workspace does not match"}
                 )
-            history = self._registry.history(saved)
+            history, closures = self._registry.replay_history(saved)
             roots = self._registry.validate_roots(owned_cwd, additional_directories)
             if any(
                 child.active and child.root == session_id
@@ -741,9 +788,14 @@ class PenguinACPAgent:
                 else (None, None)
             )
             provider = await self._new_mcp_provider(mcp_servers, owned_cwd)
-            if active and active.mcp_provider is not None:
-                await asyncio.to_thread(active.mcp_provider.close)
-            self.sessions[session_id] = Session(
+            # Re-check now: a prompt or close may have started on the session
+            # while this load waited for the gate or the steps above.
+            current = self.sessions.get(session_id)
+            if current is not active or (current is not None and current.busy):
+                if provider is not None:
+                    await asyncio.to_thread(provider.close)
+                raise RequestError.invalid_request({"reason": "Session is busy"})
+            installed = Session(
                 cwd=owned_cwd,
                 roots=roots,
                 mcp_provider=provider,
@@ -755,37 +807,59 @@ class PenguinACPAgent:
                 terminal=terminal,
                 shell=shell,
             )
-            saved.metadata["acp_additional_directories"] = [
-                str(root) for root in roots[1:]
-            ]
-            saved.metadata["execution_allowed_roots"] = [
-                str(root) for root in self._registry.execution_roots(session_id, roots)
-            ]
-            self._registry.save(saved)
-            self._grants.restore(session_id, saved)
-            for update in history:
-                if not isinstance(update, dict):
-                    self._processes.restore(session_id, update)
-            if replay:
+            self.sessions[session_id] = installed
+            try:
+                if active and active.mcp_provider is not None:
+                    await asyncio.to_thread(active.mcp_provider.close)
+                saved.metadata["acp_additional_directories"] = [
+                    str(root) for root in roots[1:]
+                ]
+                saved.metadata["execution_allowed_roots"] = [
+                    str(root)
+                    for root in self._registry.execution_roots(session_id, roots)
+                ]
+                self._registry.save(saved)
+                self._grants.restore(session_id, saved)
                 for update in history:
                     if isinstance(update, dict):
-                        await self._children.replay(session_id, update)
+                        self._processes.restore_raw(session_id, update)
                     else:
-                        await self._connection.session_update(
-                            session_id=session_id, update=update
-                        )
-                await self._children.finish_replay(session_id)
-            elif self._children.native:
-                for update in history:
-                    if (
-                        isinstance(update, dict)
-                        and update.get("update", {}).get("sessionUpdate")
-                        == "subagent_update"
-                    ):
-                        await self._children.replay(session_id, update)
-                await self._children.finish_replay(session_id)
-            await self._processes.refresh(session_id)
-            await self._send_commands(session_id)
+                        self._processes.restore(session_id, update)
+                if replay:
+                    for update in history:
+                        if isinstance(update, dict):
+                            await self._children.replay(session_id, update)
+                        else:
+                            await self._connection.session_update(
+                                session_id=session_id, update=update
+                            )
+                    await self._children.finish_replay(session_id)
+                elif self._children.native:
+                    for update in history:
+                        if (
+                            isinstance(update, dict)
+                            and update.get("update", {}).get("sessionUpdate")
+                            == "subagent_update"
+                        ):
+                            await self._children.replay(session_id, update)
+                    await self._children.finish_replay(session_id)
+                await self._processes.refresh(session_id)
+                await self._send_commands(session_id)
+            except BaseException:
+                # Leave no half-loaded session: it is not open afterwards.
+                if self.sessions.get(session_id) is installed:
+                    self.sessions.pop(session_id)
+                self._children.replay_known.pop(session_id, None)
+                self._grants.close(session_id)
+                if provider is not None:
+                    await asyncio.to_thread(provider.close)
+                raise
+            # The load succeeded: keep the "never completed" outcomes it showed.
+            for update in closures:
+                if isinstance(update, dict):
+                    self._registry.append(session_id, update)
+                else:
+                    self._registry.record(session_id, update)
 
     async def list_sessions(
         self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
@@ -835,6 +909,8 @@ class PenguinACPAgent:
             raise RequestError.invalid_request(
                 {"reason": "Client terminal is unavailable"}
             )
+        if session.closing:
+            raise RequestError.invalid_request({"reason": "Session is closing"})
         if session.task is not None:
             raise RequestError.invalid_request(
                 {"reason": "A turn is already active for this session"}
@@ -1041,6 +1117,9 @@ class PenguinACPAgent:
                     if session.cancelled:
                         for request in self._approvals.get_pending(session_id):
                             self._approvals.deny(request.id)
+                        # The cancel belonged to this turn; requests from work
+                        # that outlives it are asked like any other.
+                        session.cancelled = False
                     session.running = False
                     session.task = None
                     if gate_owned:
@@ -1097,13 +1176,21 @@ class PenguinACPAgent:
             def done(completed: asyncio.Task[Any]) -> None:
                 self._approval_tasks.discard(completed)
                 owned.discard(completed)
+                if not owned and (
+                    self._approval_tasks_by_session.get(request.session_id) is owned
+                ):
+                    del self._approval_tasks_by_session[request.session_id]
 
             task.add_done_callback(done)
 
         self._loop.call_soon_threadsafe(schedule)
 
     async def _request_permission(self, request: ApprovalRequest) -> None:
-        if self._connection is None or self._approvals.get_request(request.id) is None:
+        current = self._approvals.get_request(request.id)
+        if current is None or current.status != ApprovalStatus.PENDING:
+            # Resolved (denied by a cancel, expired) before the dialog ran.
+            return
+        if self._connection is None:
             self._approvals.deny(request.id)
             return
         try:

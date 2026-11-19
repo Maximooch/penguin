@@ -23,6 +23,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How long a cancelled process tool call waits for its worker to stop the
+# process before returning. A stop escalates to SIGKILL within a few seconds.
+PROCESS_CANCEL_GRACE_SECONDS = 10.0
+
 ASYNC_TOOL_NAMES = frozenset(
     {
         "browser_interact",
@@ -226,8 +230,21 @@ class AsyncToolDispatcher:
                 return await asyncio.shield(task)
             except asyncio.CancelledError:
                 cancellation.set()
-                # The worker owns process cleanup. Do not abandon it on cancellation.
-                await asyncio.shield(task)
+                # The worker owns process cleanup; give it time to stop the
+                # process, but do not hold the cancelled caller indefinitely.
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(task), PROCESS_CANCEL_GRACE_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "%s did not finish within %ss of cancellation; its worker "
+                        "keeps running and still owns process cleanup",
+                        canonical_name,
+                        PROCESS_CANCEL_GRACE_SECONDS,
+                    )
+                except Exception:
+                    logger.debug("Cancelled process tool failed", exc_info=True)
                 raise
         if canonical_name not in ASYNC_TOOL_NAMES:
             return await asyncio.to_thread(

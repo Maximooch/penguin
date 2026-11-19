@@ -45,6 +45,10 @@ class MCPToolProvider:
         self.config = isolated_mcp_config(config or {})
         self._manager: MCPClientManager | None = None
         self._schemas: list[dict[str, Any]] | None = None
+        # Closed for good: a provider owned by a closed ACP session must not
+        # reconnect (and spawn servers nothing will close) for a background
+        # agent that inherited it.
+        self._closed = False
 
     @property
     def enabled(self) -> bool:
@@ -64,7 +68,7 @@ class MCPToolProvider:
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """Return ToolManager-compatible schemas for discovered MCP tools."""
-        if not self.enabled:
+        if self._closed or not self.enabled:
             return []
         if self._schemas is None:
             self._schemas = [
@@ -77,6 +81,14 @@ class MCPToolProvider:
         self, tool_name: str, tool_input: dict[str, Any] | None = None
     ) -> str:
         """Execute an MCP tool and return a JSON string payload."""
+        if self._closed:
+            return json.dumps(
+                {
+                    "error": "mcp_provider_closed",
+                    "tool": tool_name,
+                    "message": "The MCP servers for this session were closed.",
+                }
+            )
         if not self.enabled:
             return json.dumps(
                 {
@@ -112,7 +124,7 @@ class MCPToolProvider:
     def refresh(self) -> list[dict[str, Any]]:
         """Force rediscovery and return fresh ToolManager-compatible schemas."""
         self._schemas = None
-        if not self.enabled:
+        if self._closed or not self.enabled:
             return []
         definitions = self.manager.refresh_sync()
         self._schemas = [definition.to_penguin_schema() for definition in definitions]
@@ -121,7 +133,7 @@ class MCPToolProvider:
     def reconnect(self, server_name: str | None = None) -> dict[str, Any]:
         """Reconnect one or all MCP servers and invalidate cached schemas."""
         self._schemas = None
-        if not self.enabled:
+        if self._closed or not self.enabled:
             return self.status()
         result = self.manager.reconnect_sync(server_name)
         self._schemas = [
@@ -133,6 +145,7 @@ class MCPToolProvider:
     def close(self) -> dict[str, Any]:
         """Close MCP sessions and return diagnostics."""
         self._schemas = None
+        self._closed = True
         if self._manager is None:
             return self.status()
         result = self._manager.close_sync()

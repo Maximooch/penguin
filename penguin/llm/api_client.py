@@ -4,7 +4,7 @@ import io
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Callable, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
 
@@ -16,25 +16,27 @@ import httpx
 # from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost
 from PIL import Image  # type: ignore
 
+from penguin.constants import get_default_max_history_tokens
+from penguin.utils.callbacks import adapt_stream_callback
+
+from .adapters import get_adapter  # Keep for native preference
 from .contracts import (
     ErrorCategory,
     LLMCallResult,
-    LLMCallStatus,
     LLMError,
     LLMPreparedRequest,
     LLMProviderCapabilities,
     LLMProviderError,
     LLMRequestLifecycle,
     ProviderRequestStatus,
+    classify_call_outcome,
 )
+from .litellm_support import load_litellm_gateway_class, load_litellm_module
 from .model_config import ModelConfig
 from .provider_registry import ProviderRegistry
-from .providers.link.context import LinkInferenceContext
 from .provider_transform import apply_model_config_transforms, build_llm_error
-from penguin.constants import get_default_max_history_tokens
-from penguin.utils.callbacks import adapt_stream_callback
-from .adapters import get_adapter  # Keep for native preference
-from .litellm_support import load_litellm_gateway_class, load_litellm_module
+from .providers.link.context import LinkInferenceContext
+
 # Lazy import gateways to avoid import overhead
 # from .litellm_gateway import LiteLLMGateway
 # from .openrouter_gateway import OpenRouterGateway
@@ -225,15 +227,19 @@ class ConnectionPoolManager:
             raise
 
     async def close_all(self) -> None:
-        """Close all pooled clients. Call during shutdown."""
-        for base_url, client in list(self._clients.items()):
+        """Close all pooled clients. Call during shutdown.
+
+        The clients leave the pool before any is closed, so ``get_client``
+        never returns a closing client, and a client created while this runs
+        stays in the pool for the next ``close_all``.
+        """
+        clients, self._clients = self._clients, {}
+        for base_url, client in clients.items():
             try:
                 await client.aclose()
                 logger.info(f"Closed connection pool for {base_url}")
             except Exception as e:
                 logger.warning(f"Error closing client for {base_url}: {e}")
-        self._clients.clear()
-        self._client_locks.clear()
 
     def get_stats(self) -> Dict[str, Dict]:
         """Get connection pool statistics for monitoring.
@@ -556,23 +562,12 @@ class APIClient:
         if resolved_error is None and isinstance(lifecycle, LLMRequestLifecycle):
             resolved_error = lifecycle.error
 
-        if isinstance(lifecycle, LLMRequestLifecycle) and (
-            lifecycle.status == ProviderRequestStatus.CANCELLED
-        ):
-            status = LLMCallStatus.CANCELLED
-        elif resolved_error is not None:
-            status = (
-                LLMCallStatus.RETRYABLE_ERROR
-                if resolved_error.retryable
-                else LLMCallStatus.FATAL_ERROR
-            )
-        elif isinstance(lifecycle, LLMRequestLifecycle) and lifecycle.status in {
-            ProviderRequestStatus.DISCONNECTED,
-            ProviderRequestStatus.FAILED,
-        }:
-            status = LLMCallStatus.FATAL_ERROR
-        else:
-            status = LLMCallStatus.COMPLETED
+        status = classify_call_outcome(
+            lifecycle_status=lifecycle.status
+            if isinstance(lifecycle, LLMRequestLifecycle)
+            else None,
+            error=resolved_error,
+        )
 
         return LLMCallResult(
             text=str(text or ""),

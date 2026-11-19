@@ -148,9 +148,9 @@ async def test_get_response_uses_fallback_after_empty_response_retries() -> None
         "I apologize, but I encountered an issue generating a response. "
         "Please try again."
     )
-    assert owner.conversation_manager.conversation.assistant_messages == [
-        response["assistant_response"]
-    ]
+    # Shown to the user, never saved as something the assistant said.
+    assert owner.conversation_manager.conversation.assistant_messages == []
+    assert response["error"] == "empty_response"
 
 
 @pytest.mark.asyncio

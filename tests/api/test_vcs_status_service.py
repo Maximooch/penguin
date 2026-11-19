@@ -145,6 +145,9 @@ async def test_watcher_polls_once_per_directory_and_preserves_scopes(
         "other": str(other),
     }
     monkeypatch.setattr(service, "_LAST_BRANCH_KEYS", {})
+    # Clients watch both directories; only watched directories are polled.
+    service.watch_vcs_directory(core, str(tmp_path))
+    service.watch_vcs_directory(core, str(other))
     calls, events = [], []
     loop = asyncio.get_running_loop()
 
@@ -183,8 +186,9 @@ async def test_watcher_polls_once_per_directory_and_preserves_scopes(
     await done
     # Two directories, two passes, at most eight commands per snapshot.
     assert len(calls) <= 2 * 2 * 8
-    # Default scope + eleven sessions; unchanged pass is silent.
-    assert len(events) == 12
+    # One directory scope per watched directory + eleven sessions; the
+    # unchanged pass is silent.
+    assert len(events) == 13
     properties = [event["properties"] for event in events]
     assert {p["sessionID"] for p in properties} == {
         None,
@@ -193,6 +197,7 @@ async def test_watcher_polls_once_per_directory_and_preserves_scopes(
     assert all(
         p["directory"] == (str(other) if p["sessionID"] == "other" else str(tmp_path))
         for p in properties
+        if p["sessionID"] is not None
     )
 
 
@@ -218,7 +223,9 @@ async def test_watcher_slow_git_does_not_block_loop_and_cancels(monkeypatch, tmp
             finished.set()
 
     monkeypatch.setattr(service, "get_vcs_info", slow_snapshot)
-    task = asyncio.create_task(service._vcs_watch_loop(_core(tmp_path), 0))
+    core = _core(tmp_path)
+    service.watch_vcs_directory(core, str(tmp_path))
+    task = asyncio.create_task(service._vcs_watch_loop(core, 0))
     try:
         await asyncio.wait_for(entered.wait(), 1)
         assert not finished.is_set()

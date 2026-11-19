@@ -38,7 +38,7 @@ def _wait_for_stdout(
 
 
 def test_first_default_poll_recovers_ready_output(runtime: ProcessRuntime) -> None:
-    started = runtime.start("printf 'hello\\n'; read line")
+    started = runtime.start("printf 'hello\\n'; read line", stdin=True)
     process_id = started["process_id"]
     _wait_for_stdout(runtime, process_id)
 
@@ -54,7 +54,8 @@ def test_returned_cursor_does_not_skip_output(
     runtime: ProcessRuntime, after_output: bool
 ) -> None:
     started = runtime.start(
-        "read first; printf 'first\\n'; read second; printf 'second\\n'; read done"
+        "read first; printf 'first\\n'; read second; printf 'second\\n'; read done",
+        stdin=True,
     )
     process_id = started["process_id"]
     cursor = started["next_sequence"]
@@ -78,7 +79,7 @@ def test_returned_cursor_does_not_skip_output(
 def test_running_process_can_wait_through_three_empty_polls(
     runtime: ProcessRuntime,
 ) -> None:
-    process_id = runtime.start("read done")["process_id"]
+    process_id = runtime.start("read done", stdin=True)["process_id"]
     state = LoopState()
     for _ in range(3):
         polled = runtime.poll(process_id)
@@ -92,7 +93,7 @@ def test_running_process_can_wait_through_three_empty_polls(
 async def test_scheduler_preserves_running_process_metadata_and_nonempty_hash(
     runtime: ProcessRuntime,
 ) -> None:
-    process_id = runtime.start("read done")["process_id"]
+    process_id = runtime.start("read done", stdin=True)["process_id"]
 
     def execute_call(call: ToolCall) -> dict[str, Any]:
         return runtime.poll(call.arguments["process_id"])

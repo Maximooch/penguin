@@ -47,3 +47,45 @@ def test_complete_current_execution_moves_running_task_to_pending_review_not_com
 
     assert task.status == TaskStatus.PENDING_REVIEW
     assert task.phase == TaskPhase.DONE
+
+
+_REVIEW_READY = {TaskStatus.PENDING_REVIEW, TaskStatus.COMPLETED}
+
+
+@pytest.mark.parametrize("status", list(TaskStatus))
+def test_mark_pending_review_moves_status_and_phase_together(status):
+    task = make_task(status=status, phase=TaskPhase.VERIFY)
+
+    try:
+        task.mark_pending_review("ready")
+    except StateTransitionError:
+        assert task.status == status
+        assert task.phase == TaskPhase.VERIFY
+    else:
+        assert task.status == TaskStatus.PENDING_REVIEW
+        assert task.phase == TaskPhase.DONE
+
+    assert (task.phase == TaskPhase.DONE) <= (task.status in _REVIEW_READY)
+
+
+@pytest.mark.parametrize("status", list(TaskStatus))
+def test_approve_moves_status_and_phase_together(status):
+    task = make_task(status=status, phase=TaskPhase.VERIFY)
+
+    try:
+        task.approve("reviewer")
+    except StateTransitionError:
+        assert task.status == status
+        assert task.phase == TaskPhase.VERIFY
+    else:
+        assert task.status == TaskStatus.COMPLETED
+        assert task.phase == TaskPhase.DONE
+
+    assert (task.phase == TaskPhase.DONE) <= (task.status in _REVIEW_READY)
+
+
+def test_active_task_cannot_be_marked_pending_review():
+    task = make_task(status=TaskStatus.ACTIVE, phase=TaskPhase.VERIFY)
+
+    with pytest.raises(StateTransitionError):
+        task.mark_pending_review("ready")

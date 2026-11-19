@@ -1041,9 +1041,7 @@ def test_initialize_tui_bridge_state_wires_event_stream_and_opencode_state() -> 
     assert owner._stream_manager is stream_manager
     assert owner._tui_adapter.name == "adapter"
     assert owner._tui_adapters == {}
-    assert owner._opencode_abort_sessions == set()
-    assert owner._opencode_active_requests == {}
-    assert owner._opencode_process_tasks == {}
+    assert owner._opencode_session_runs == {}
     assert owner._runmode_stream_callback is None
     assert owner._runmode_active is False
     assert owner.run_mode is None

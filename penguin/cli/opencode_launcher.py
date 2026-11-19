@@ -15,6 +15,7 @@ import os
 import platform
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -102,14 +103,19 @@ def _is_server_running(base_url: str, timeout_seconds: float = 1.0) -> bool:
         timeout_seconds: HTTP timeout for the health check request.
 
     Returns:
-        True if `/api/v1/health` responds with HTTP 200, otherwise False.
+        True if `/api/v1/health` answers HTTP 200 with Penguin's health
+        payload. Another service on the port that also answers 200 is not
+        Penguin.
     """
     try:
         with urlopen(_health_url(base_url), timeout=timeout_seconds) as response:
             status = getattr(response, "status", response.getcode())
-            return status == 200
-    except (URLError, OSError):
+            if status != 200:
+                return False
+            payload = json.loads(response.read() or b"null")
+    except (URLError, OSError, ValueError):
         return False
+    return isinstance(payload, dict) and "agent_capacity" in payload
 
 
 def _is_local_url(base_url: str) -> bool:
@@ -238,10 +244,12 @@ def _wait_for_server(
     """
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        if _is_server_running(base_url, timeout_seconds=0.5):
-            return True
+        # Our child must still be running: once it has exited, a server on the
+        # port belongs to someone else.
         if proc.poll() is not None:
             return False
+        if _is_server_running(base_url, timeout_seconds=0.5):
+            return True
         time.sleep(0.2)
     return False
 
@@ -607,6 +615,27 @@ def _select_release_asset(release: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+
+def _install_sidecar_binary(source: Path, target: Path) -> None:
+    """Copy the sidecar binary into the cache without exposing a partial file.
+
+    The copy goes to a sibling temporary file that is renamed into place, so an
+    interrupted copy cannot leave a truncated file where a later run would find
+    it and treat it as a valid cached binary.
+
+    Args:
+        source: The extracted binary.
+        target: The final cached path.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _resolve_sidecar_binary() -> Path:
     explicit_path = os.getenv("PENGUIN_TUI_BIN_PATH", "").strip()
     if explicit_path:
@@ -699,8 +728,7 @@ def _resolve_sidecar_binary() -> Path:
                 "Downloaded Penguin TUI sidecar archive did not contain an executable"
             )
 
-        binary_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(extracted_binary, binary_path)
+        _install_sidecar_binary(extracted_binary, binary_path)
 
     if not sys.platform.startswith("win"):
         mode = binary_path.stat().st_mode
@@ -920,7 +948,24 @@ def _parse_args(
     return parser.parse_known_args(argv)
 
 
+def _exit_on_sigterm(signum: int, _frame: Any) -> None:
+    """Turn SIGTERM into a normal exit so cleanup and atexit hooks run."""
+    raise SystemExit(128 + signum)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the launcher; SIGTERM exits it normally, stopping its web server."""
+    try:
+        previous = signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    except ValueError:  # Not the main thread; leave signal handling alone.
+        return _run_launcher(argv)
+    try:
+        return _run_launcher(argv)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _run_launcher(argv: Sequence[str] | None = None) -> int:
     """Entry point for the OpenCode launcher command.
 
     Args:

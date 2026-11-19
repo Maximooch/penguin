@@ -386,9 +386,7 @@ async def _handle_openai_browser_callback_connection(
         )
         _persist_provider_credential(provider_id, record)
         with _AUTH_LOCK:
-            # TODO: Follow-up PR should only clear the pending OAuth entry if it
-            # still matches this callback's state, so newer flows are preserved.
-            _PENDING_OAUTH.pop(provider_id, None)
+            _clear_pending_oauth(provider_id, pending)
             _RECENT_OAUTH_COMPLETIONS[provider_id] = time.monotonic()
         if isinstance(future, asyncio.Future) and not future.done():
             future.set_result(True)
@@ -498,6 +496,17 @@ def _extract_openai_account_id(tokens: dict[str, Any]) -> str | None:
                     return org_id
 
     return None
+
+
+def _clear_pending_oauth(provider_id: str, finished: dict[str, Any]) -> None:
+    """Drop the provider's pending authorization if it is still ``finished``.
+
+    A newer authorization may have replaced it while this one completed; that
+    one stays, so its own callback still finds it. Call with ``_AUTH_LOCK`` held.
+    """
+    current = _PENDING_OAUTH.get(provider_id)
+    if current is not None and current.get("flow_id") == finished.get("flow_id"):
+        _PENDING_OAUTH.pop(provider_id, None)
 
 
 def _cleanup_pending_oauth() -> None:
@@ -1053,6 +1062,7 @@ async def authorize_provider_oauth(
             method_index=method_index,
         )
 
+    pending["flow_id"] = secrets.token_hex(8)
     with _AUTH_LOCK:
         _cleanup_pending_oauth()
         _PENDING_OAUTH[pid] = pending
@@ -1089,10 +1099,11 @@ async def callback_provider_oauth(
             recent_completion_at = _RECENT_OAUTH_COMPLETIONS.get(pid)
 
         if not pending:
-            # TODO: Follow-up PR should make this recent-completion fast path
-            # auto-wait-only, so stale explicit callback codes still fail.
+            # Only a caller waiting for the browser flow (no code) may take a
+            # completion that just happened; a pasted code must match a flow.
             if (
-                method_index == 0
+                code is None
+                and method_index == 0
                 and isinstance(recent_completion_at, (int, float))
                 and time.monotonic() - float(recent_completion_at) < 30
             ):
@@ -1170,9 +1181,7 @@ async def callback_provider_oauth(
 
         _persist_provider_credential(pid, record)
         with _AUTH_LOCK:
-            # TODO: Follow-up PR should only clear the pending OAuth entry if it
-            # still matches this callback's state, so newer flows are preserved.
-            _PENDING_OAUTH.pop(pid, None)
+            _clear_pending_oauth(pid, pending)
             _RECENT_OAUTH_COMPLETIONS[pid] = time.monotonic()
         logger.info(
             "provider.oauth.callback success provider=%s method=%s flow=%s "

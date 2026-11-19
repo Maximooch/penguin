@@ -79,8 +79,14 @@ class EventBus:
             handler: The function to call when event occurs (sync or async)
             priority: Execution priority for this handler
         """
-        # Use weakref to allow subscribers to be garbage collected when no longer used
-        handler_ref = weakref.ref(handler)
+        # Use weakref to allow subscribers to be garbage collected when no longer used.
+        # A bound method is a temporary object: a plain weakref to it dies at
+        # once, so it needs WeakMethod, which follows the owning instance.
+        handler_ref = (
+            weakref.WeakMethod(handler)
+            if inspect.ismethod(handler)
+            else weakref.ref(handler)
+        )
         
         # Add to the appropriate priority queue
         self._handlers[event_type][priority].append(handler_ref)
@@ -102,7 +108,9 @@ class EventBus:
             # Filter out the handler to remove (or refs whose target is gone)
             self._handlers[event_type][priority] = [
                 h_ref for h_ref in self._handlers[event_type][priority]
-                if h_ref() is not None and h_ref() is not handler
+                # Equality, not identity: each access to a bound method
+                # builds a new object.
+                if h_ref() is not None and h_ref() != handler
             ]
         
         logger.debug(f"Unsubscribed from {event_type}")
@@ -123,13 +131,14 @@ class EventBus:
             for priority in [EventPriority.HIGH, EventPriority.NORMAL, EventPriority.LOW]:
                 # Get handlers for this priority (resolving weak refs)
                 handlers = []
+                live_refs = []
                 for handler_ref in self._handlers[event_type][priority]:
                     handler = handler_ref()
                     if handler is not None:
                         handlers.append(handler)
-                    else:
-                        # Clean up dead references
-                        self._handlers[event_type][priority].remove(handler_ref)
+                        live_refs.append(handler_ref)
+                # Drop dead references without mutating the list being read.
+                self._handlers[event_type][priority] = live_refs
                 
                 # Execute all handlers at this priority level
                 for handler in handlers:

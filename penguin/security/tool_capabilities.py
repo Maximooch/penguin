@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 TOOL_ALLOWLIST_ENV = "PENGUIN_TOOL_ALLOWLIST_JSON"
 _DENIAL_REASON = "Tool is not enabled by the startup capability policy."
+_DENIAL_ERROR = "tool_capability_denied"
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,7 @@ class ToolCapabilityPolicy:
     def denial_payload(self, requested_name: str) -> dict[str, str]:
         """Return a stable, input-free denial payload."""
         return {
-            "error": "tool_capability_denied",
+            "error": _DENIAL_ERROR,
             "tool": requested_name,
             "reason": _DENIAL_REASON,
         }
@@ -70,4 +71,19 @@ class ToolCapabilityPolicy:
             raise PermissionError(self.denial_json(requested_name))
 
 
-__all__ = ["TOOL_ALLOWLIST_ENV", "ToolCapabilityPolicy"]
+def is_capability_denial(output: object) -> bool:
+    """Return whether a tool's text output is this policy's denial payload.
+
+    Dispatchers return a denial as JSON text. Anything that records a result
+    status must treat it as an error, never as a completed call.
+    """
+    if not isinstance(output, str) or _DENIAL_ERROR not in output:
+        return False
+    try:
+        payload = json.loads(output)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("error") == _DENIAL_ERROR
+
+
+__all__ = ["TOOL_ALLOWLIST_ENV", "ToolCapabilityPolicy", "is_capability_denial"]

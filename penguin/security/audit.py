@@ -400,7 +400,14 @@ def get_audit_logger() -> PermissionAuditLogger:
     to customize settings before first use.
     """
     global _audit_logger
-    
+
+    from penguin.core_runtime.isolation import scoped_service
+
+    # An isolated runtime (one per ACP root) has its own logger.
+    scoped = scoped_service("audit_logger", PermissionAuditLogger)
+    if scoped is not None:
+        return scoped
+
     if _audit_logger is None:
         with _audit_logger_lock:
             if _audit_logger is None:
@@ -422,19 +429,24 @@ def configure_audit_logger(
     Should be called early in application startup before permission checks begin.
     """
     global _audit_logger
-    
+
+    from penguin.core_runtime.isolation import set_scoped_service
+
+    configured = PermissionAuditLogger(
+        log_file=log_file,
+        categories=categories,
+        max_memory_entries=max_memory_entries,
+        include_context=include_context,
+        workspace_root=workspace_root,
+        enabled=enabled,
+    )
+    logger.info(f"Permission audit logger configured: enabled={enabled}, log_file={log_file}")
+    # In an isolated runtime, configure only that runtime's logger.
+    if set_scoped_service("audit_logger", configured):
+        return configured
     with _audit_logger_lock:
-        _audit_logger = PermissionAuditLogger(
-            log_file=log_file,
-            categories=categories,
-            max_memory_entries=max_memory_entries,
-            include_context=include_context,
-            workspace_root=workspace_root,
-            enabled=enabled,
-        )
-        logger.info(f"Permission audit logger configured: enabled={enabled}, log_file={log_file}")
-    
-    return _audit_logger
+        _audit_logger = configured
+    return configured
 
 
 def configure_from_config(audit_config: "AuditConfig", workspace_root: Optional[str] = None) -> PermissionAuditLogger:

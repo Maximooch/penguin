@@ -219,34 +219,12 @@ class ConversationSystem:
         except Exception:
             pass
 
-        # NEW: Auto-checkpoint integration
+        # Auto-checkpoint: the snapshot is taken now; the file is written
+        # off the event loop when one is running.
         if self.checkpoint_manager and self.checkpoint_manager.should_checkpoint(
             message
         ):
-            # Create checkpoint asynchronously to avoid blocking
-            import asyncio
-
-            try:
-                # Try to get the current event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If we're in an async context, create a task
-                    asyncio.create_task(
-                        self.checkpoint_manager.create_checkpoint(self.session, message)
-                    )
-                else:
-                    # If no loop is running, run the checkpoint creation
-                    asyncio.run(
-                        self.checkpoint_manager.create_checkpoint(self.session, message)
-                    )
-            except RuntimeError:
-                # If we can't get a loop, try to run it
-                try:
-                    asyncio.run(
-                        self.checkpoint_manager.create_checkpoint(self.session, message)
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to create checkpoint: {e}")
+            self.checkpoint_manager.checkpoint_in_background(self.session, message)
 
         # Process session through context window manager if available
         if self.context_window:
@@ -263,13 +241,22 @@ class ConversationSystem:
             # Save current session before transitioning
             self.save()
 
-            # Create continuation session and switch to it
-            new_session = self.session_manager.create_continuation_session(self.session)
-            self.session = new_session
-            self._modified = True
-
-            # Log transition for debugging
-            logger.info(f"Transitioned to continuation session {new_session.id}")
+            # Continue under the same id, carrying recent history. If the
+            # older history cannot be archived, keep the session as it is.
+            try:
+                new_session = self.session_manager.create_continuation_session(
+                    self.session
+                )
+            except OSError:
+                logger.error(
+                    "Could not continue session %s; keeping it as is",
+                    self.session.id,
+                    exc_info=True,
+                )
+            else:
+                self.session = new_session
+                self._modified = True
+                logger.info(f"Continued session {new_session.id} with recent history")
 
         return message
 

@@ -264,3 +264,49 @@ async def test_process_response_actions_records_execution_errors() -> None:
     assert isinstance(args[1], RuntimeError)
     assert str(args[1]) == "boom"
     assert kwargs == {}
+
+
+class _DenyingExecutor(_ActionExecutor):
+    """Denies ``finish_task`` the way a restricted capability policy does."""
+
+    def capability_denial(self, action_name: str) -> str | None:
+        if action_name == "finish_task":
+            return '{"error": "tool_capability_denied", "tool": "finish_task"}'
+        return None
+
+
+@pytest.mark.asyncio
+async def test_execute_action_reports_a_capability_denial_as_an_error() -> None:
+    executor = _DenyingExecutor(result="should not run")
+    owner = SimpleNamespace(action_executor=executor)
+
+    payload = await action_execution.execute_action(
+        owner, SimpleNamespace(action_type="finish_task")
+    )
+
+    assert payload["status"] == "error"
+    assert "tool_capability_denied" in payload["result"]
+    assert executor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_denied_finish_action_does_not_exit_continuation() -> None:
+    executor = _DenyingExecutor(result="should not run")
+    conversation = _ConversationManager()
+    owner = SimpleNamespace(
+        action_executor=executor,
+        conversation_manager=conversation,
+        _check_interrupt=lambda: False,
+    )
+
+    result = await action_execution.process_response_actions(
+        owner,
+        "response",
+        parse_actions=lambda _text: [SimpleNamespace(action_type="finish_task")],
+        log=SimpleNamespace(error=lambda *_a, **_k: None),
+    )
+
+    assert result.exit_continuation is False
+    assert [item["status"] for item in result.action_results] == ["error"]
+    assert conversation.action_results[0]["status"] == "error"
+    assert executor.calls == []

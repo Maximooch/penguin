@@ -127,8 +127,9 @@ class IncrementalIndexer:
             return
             
         # 3. Add to the memory provider
+        previous_id = self.metadata.get_memory_id(file_path)
         try:
-            await self.provider.add_memory(
+            memory_id = await self.provider.add_memory(
                 content=processed_data["content"],
                 metadata=processed_data["metadata"],
                 categories=[processed_data["metadata"].get("file_type", "general")]
@@ -137,7 +138,25 @@ class IncrementalIndexer:
             logger.error(f"Failed to add memory for file {file_path}: {e}")
             return
 
-        # 4. Update the index metadata
+        # 4. Replace the file's previous memory, added first so a failure here
+        # never leaves the file without one.
+        if previous_id and previous_id != memory_id:
+            try:
+                await self.provider.delete_memory(previous_id)
+            except Exception as e:
+                logger.warning(
+                    "Could not remove the previous memory %s for %s: %s",
+                    previous_id,
+                    file_path,
+                    e,
+                )
+
+        # 5. Update the index metadata
         content_hash = self.metadata._calculate_hash(file_path)
-        self.metadata.update_file_metadata(file_path, content_hash, self.provider.embedding_model)
+        self.metadata.update_file_metadata(
+            file_path,
+            content_hash,
+            self.provider.embedding_model,
+            memory_id=memory_id if isinstance(memory_id, str) else None,
+        )
         logger.info(f"Successfully indexed file: {file_path}") 

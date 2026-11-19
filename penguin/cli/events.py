@@ -13,6 +13,7 @@ Key Features:
 
 import asyncio
 import hashlib
+import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -220,7 +221,12 @@ class EventBus:
             return False
 
         # Create hash of event
-        content = data.get("content", "")
+        # Events without ``content`` (status, tool, error) are identified by
+        # their whole payload; otherwise a tool "end" looks like its "start".
+        if "content" in data:
+            content = data.get("content", "")
+        else:
+            content = json.dumps(data, sort_keys=True, default=str)
         event_hash = hashlib.md5(f"{event_type}:{content}".encode()).hexdigest()
         current_time = time.time()
 

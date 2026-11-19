@@ -31,6 +31,8 @@ class RunModeCoreFacade:
         mode_type: str = "task",
         stream_callback_for_cli: Callable[[str], Awaitable[None]] | None = None,
         ui_update_callback_for_cli: Callable[[], Awaitable[None]] | None = None,
+        websocket_event_callback: Callable[[dict[str, Any]], Awaitable[None]]
+        | None = None,
     ) -> None:
         """Start autonomous run mode for executing a task."""
         await core_runmode_lifecycle.start_run_mode(
@@ -43,6 +45,7 @@ class RunModeCoreFacade:
             mode_type=mode_type,
             stream_callback_for_cli=stream_callback_for_cli,
             ui_update_callback_for_cli=ui_update_callback_for_cli,
+            websocket_event_callback=websocket_event_callback,
             run_mode_factory=RunMode,
             log_error=log_error,
             logger=logger,

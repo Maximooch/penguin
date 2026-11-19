@@ -22,11 +22,17 @@ if TYPE_CHECKING:
 
 def prepare_process_step(
     manager: ToolManager, cm: Any, context: ExecutionContext
-) -> None:
-    """Bind scoped events and persist completed-process notices before an LLM step."""
+) -> bool:
+    """Bind scoped events and persist completed-process notices before an LLM step.
+
+    Returns:
+        Whether an event sink was bound; if so, the caller releases it with
+        ``manager.process_tools.release`` when the step ends.
+    """
     service = manager.process_tools
     owner = process_owner(context.as_dict())
     core = getattr(cm, "core", None)
+    bound = False
     if core is not None and callable(getattr(core, "emit_ui_event", None)):
 
         async def emit(kind: str, payload: dict[str, Any]) -> None:
@@ -73,18 +79,30 @@ def prepare_process_step(
                 )
 
         service.bind(owner, emit)
-    for notice in service.pending(owner):
+        bound = True
+    notices = service.take_pending(owner)
+    for index, notice in enumerate(notices):
         # Lifecycle-only text: command output stays in tool results/logs and is
         # never promoted into a system instruction or an orphaned native result.
-        cm.conversation.add_message(
-            "system",
-            f"Background process {notice['process_id']} finished: "
-            f"returncode={notice['returncode']}, reason={notice['completion_reason']}. "
-            "Its retained output is available through process_poll.",
-            category=MessageCategory.SYSTEM_OUTPUT,
-            metadata={"process_id": notice["process_id"], "process_notification": True},
-        )
-        service.acknowledge(owner, notice["process_id"])
+        try:
+            cm.conversation.add_message(
+                "system",
+                f"Background process {notice['process_id']} finished: "
+                f"returncode={notice['returncode']}, "
+                f"reason={notice['completion_reason']}. "
+                "Its retained output is available through process_poll.",
+                category=MessageCategory.SYSTEM_OUTPUT,
+                metadata={
+                    "process_id": notice["process_id"],
+                    "process_notification": True,
+                },
+            )
+        except BaseException:
+            service.restore_pending(owner, notices[index:])
+            if bound:
+                service.release(owner)
+            raise
+    return bound
 
 
 def process_session_scope(step: Callable[..., Any]) -> Callable[..., Any]:
@@ -105,8 +123,12 @@ def process_session_scope(step: Callable[..., Any]) -> Callable[..., Any]:
             agent_id=agent_id or previous.agent_id or "agent",
         )
         with execution_context_scope(context):
-            prepare_process_step(manager, cm, context)
-            return await step(engine, *args, **kwargs)
+            bound = prepare_process_step(manager, cm, context)
+            try:
+                return await step(engine, *args, **kwargs)
+            finally:
+                if bound:
+                    manager.process_tools.release(process_owner(context.as_dict()))
 
     return wrapped
 

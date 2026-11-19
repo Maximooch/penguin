@@ -120,8 +120,6 @@ class ConversationManager:
                     f"Checkpoint manager initialized with {len(self.checkpoint_manager.checkpoint_index)} checkpoints"
                 )
 
-                # Workers will start lazily when first checkpoint is created
-
             except Exception as e:
                 logger.warning(f"Failed to initialize checkpoint manager: {e}")
                 self.checkpoint_manager = None
@@ -1585,19 +1583,10 @@ class ConversationManager:
         self.agent_session_managers.pop(agent_id, None)
         self.agent_checkpoint_managers.pop(agent_id, None)
         self.agent_context_windows.pop(agent_id, None)
-        if (
-            getattr(self, "context_loader", None)
-            and getattr(self.context_loader, "context_manager", None)
-            is self.conversation
-        ):
-            # Ensure context loader still references active conversation
-            try:
-                self.context_loader.context_manager = self.conversation
-            except Exception:
-                pass
         if self.current_agent_id == agent_id:
-            self.current_agent_id = "default"
-            self.conversation = self.agent_sessions["default"]
+            # Move every "current" binding (conversation, session manager,
+            # checkpoint manager, context window, context loader) together.
+            self.set_current_agent("default")
         return True
 
     def branch_from_snapshot(
@@ -1676,11 +1665,17 @@ class ConversationManager:
         success = await self.checkpoint_manager.rollback_to_checkpoint(checkpoint_id)
 
         if success:
-            # Update conversation system with the restored session
-            self.conversation.session = self.session_manager.current_session
-            self.conversation._modified = True
+            self._adopt_restored_session()
 
         return success
+
+    def _adopt_restored_session(self) -> None:
+        """Point the conversation at the session a checkpoint operation restored."""
+        session = self.session_manager.current_session
+        self.conversation.session = session
+        self.conversation._modified = True
+        if session is not None:
+            self.session_manager.adopt_current_session(session)
 
     async def branch_from_checkpoint(
         self,
@@ -1708,14 +1703,7 @@ class ConversationManager:
         )
 
         if branch_id:
-            # Update conversation system with the new branch session
-            self.conversation.session = self.session_manager.current_session
-            self.conversation._modified = True
-            if self.session_manager.current_session is not None:
-                self.session_manager.mark_session_modified(
-                    self.session_manager.current_session.id
-                )
-                self.session_manager.save_session(self.session_manager.current_session)
+            self._adopt_restored_session()
 
         return branch_id
 

@@ -91,6 +91,13 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Turns that may end at the provider's output limit since the last ordinary
+# turn before a run without an iteration cap gives up on continuing.
+MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS = 8
+
+# Repair turns for broken tool syntax allowed since the last ordinary turn.
+MAX_MALFORMED_ACTION_REPAIRS = 3
+
 _OUTPUT_BOUNDARY_CONTINUATION = (
     "The previous assistant output reached a per-call output boundary. "
     "Continue exactly where it stopped without repeating any prior text."
@@ -294,7 +301,7 @@ class LoopConfig:
     # Message callback for tool results (run_task mode)
     message_callback: Optional[Callable[..., Awaitable[None]]] = None
 
-    # Default completion status when loop ends without explicit signal
+    # Status when the model ends the run without an explicit finish signal
     default_completion_status: str = "completed"
 
     # Optional billed-token ceiling for this loop invocation.
@@ -325,8 +332,14 @@ class LoopState:
     last_tool_only_summary: str = ""
     repeated_tool_only_count: int = 0
 
+    # Recovery turns since the last ordinary turn
+    output_continuation_count: int = 0
+    malformed_repair_count: int = 0
+
     def reset(self) -> None:
         """Reset state for a new run."""
+        self.output_continuation_count = 0
+        self.malformed_repair_count = 0
         self.stall_recovery_attempted = False
         self.empty_response_count = 0
         self.last_response_hash = None
@@ -764,7 +777,6 @@ class Engine:
             self.stop_conditions.append(WallClockStop(settings.wall_clock_stop_seconds))
 
         # Light run‑time state
-        self._interrupted: bool = False
         self._pending_scoped_conversation_managers: Dict[tuple[str, str], Any] = {}
 
     @staticmethod
@@ -794,7 +806,7 @@ class Engine:
         return request_id, session_id
 
     @staticmethod
-    def _conversation_session_id(cm: Any) -> Optional[str]:
+    def _conversation_session(cm: Any) -> Any:
         try:
             session = (
                 cm.get_current_session() if hasattr(cm, "get_current_session") else None
@@ -803,6 +815,11 @@ class Engine:
             session = None
         if session is None:
             session = getattr(getattr(cm, "conversation", None), "session", None)
+        return session
+
+    @staticmethod
+    def _conversation_session_id(cm: Any) -> Optional[str]:
+        session = Engine._conversation_session(cm)
         return getattr(session, "id", None) if session is not None else None
 
     @staticmethod
@@ -1425,7 +1442,9 @@ class Engine:
         Returns:
             Tuple of (should_break, completion_status)
             - should_break: True if loop should terminate
-            - completion_status: Status string if breaking, None otherwise
+            - completion_status: None when the model answered and the run ends
+              normally (the loop then uses its default status); otherwise why
+              the guard stopped a run that was not making progress
         """
         if (last_response or "").strip() == _EMPTY_RESPONSE_PLACEHOLDER:
             last_response = ""
@@ -1449,13 +1468,7 @@ class Engine:
         # Check for no-action completion (models that don't use CodeAct format)
         if not iteration_results and last_response:
             if not codeact_enabled:
-                return True, "implicit_completion" if mode == "task" else None
-            if self._looks_like_malformed_action_output(last_response):
-                logger.warning(
-                    "[WALLET_GUARD] Suppressing implicit completion for malformed %s response",
-                    mode,
-                )
-                return False, None
+                return True, None
             has_action_tags = bool(
                 re.search(r"<\w+>.*?</\w+>", last_response, re.DOTALL)
             )
@@ -1463,7 +1476,7 @@ class Engine:
                 logger.debug(
                     f"[WALLET_GUARD] No actions in {mode} response, treating as complete (model may not support CodeAct)"
                 )
-                return True, "implicit_completion" if mode == "task" else None
+                return True, None
 
         # Tool-only turns are valid for providers like OpenAI/Codex. Treat an
         # empty assistant transcript as in-progress work rather than a loop.
@@ -1478,14 +1491,14 @@ class Engine:
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: model is echoing tool results as text"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "tool_result_echo"
 
         # Check for repeated/looping responses
         if loop_state.check_repeated(last_response):
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: response repeated {loop_state.repeat_count} times"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "repeated_response"
 
         # Check for empty/trivial responses
         # Tool-bearing turns with assistant text still reset the trivial counter.
@@ -1517,7 +1530,7 @@ class Engine:
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: {loop_state.empty_response_count} consecutive trivial responses"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "empty_responses"
 
         return False, None
 
@@ -1661,14 +1674,8 @@ class Engine:
         response: str,
         *,
         mode: str,
-        codeact_enabled: bool = True,
-    ) -> bool:
-        """Add a repair note when the model emits broken tool syntax."""
-        if not codeact_enabled or not self._looks_like_malformed_action_output(
-            response
-        ):
-            return False
-
+    ) -> None:
+        """Ask the model to repair the broken tool syntax in ``response``."""
         request_id, session_id = self._trace_request_fields()
         preview = self._trace_preview(response)
         logger.warning(
@@ -1696,7 +1703,7 @@ class Engine:
             )
         except Exception:
             logger.exception("Failed to record malformed action repair note")
-            return False
+            return
 
         _trace_log_info(
             "engine.action.repair request=%s session=%s mode=%s conv_session=%s preview=%r",
@@ -1706,7 +1713,6 @@ class Engine:
             self._conversation_session_id(cm) or "unknown",
             preview,
         )
-        return True
 
     async def _iteration_loop(
         self,
@@ -1732,9 +1738,19 @@ class Engine:
         all_action_results = []
         cumulative_usage: Dict[str, Any] = {}
         completion_status = config.default_completion_status
+        limit_status = (
+            "max_iterations" if config.mode == "response" else "iterations_exceeded"
+        )
         finish_status: str | None = None
         finish_summary: str | None = None
         provider_error: dict[str, Any] | None = None
+
+        def budget_spent() -> bool:
+            return (
+                config.token_budget is not None
+                and int(cumulative_usage.get("total_tokens", 0) or 0)
+                >= config.token_budget
+            )
 
         # Reset loop state for this run
         self._get_loop_state().reset()
@@ -1753,11 +1769,7 @@ class Engine:
 
         try:
             while max_iterations is None or self.current_iteration < max_iterations:
-                if (
-                    config.token_budget is not None
-                    and int(cumulative_usage.get("total_tokens", 0) or 0)
-                    >= config.token_budget
-                ):
+                if budget_spent():
                     completion_status = "budget_limited"
                     break
 
@@ -1882,10 +1894,16 @@ class Engine:
                 )
 
                 # Steering received during this step gets a model turn before
-                # accepting completion. The loop's original budgets still apply.
-                if self.agent_mailbox.has_pending(
-                    self.current_agent_id or self.default_agent_id,
-                    self._conversation_session_id(cm) or "",
+                # accepting completion, when the budgets allow another turn.
+                # Otherwise a finish signal stands and the message stays
+                # queued for the agent's next run.
+                if (
+                    (max_iterations is None or self.current_iteration < max_iterations)
+                    and not budget_spent()
+                    and self.agent_mailbox.has_pending(
+                        self.current_agent_id or self.default_agent_id,
+                        self._conversation_session(cm),
+                    )
                 ):
                     continue
 
@@ -1924,15 +1942,27 @@ class Engine:
                         )
                     break
 
-                if (
-                    config.token_budget is not None
-                    and int(cumulative_usage.get("total_tokens", 0) or 0)
-                    >= config.token_budget
-                ):
+                if budget_spent():
                     completion_status = "budget_limited"
                     break
 
+                # Recovery turns (output-limit continuation, malformed-syntax
+                # repair) each have a cap. Their counters reset only after an
+                # ordinary turn, so alternating between them still ends.
+                loop_state = self._get_loop_state()
                 if response_data.get("finish_reason") == FinishReason.LENGTH:
+                    loop_state.output_continuation_count += 1
+                    if (
+                        loop_state.output_continuation_count
+                        > MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS
+                    ):
+                        logger.warning(
+                            "Output limit reached %s times without an ordinary "
+                            "turn; stopping.",
+                            loop_state.output_continuation_count,
+                        )
+                        completion_status = limit_status
+                        break
                     if (
                         max_iterations is None
                         or self.current_iteration < max_iterations
@@ -1973,12 +2003,24 @@ class Engine:
                     )
                     break
 
-                if not iteration_results and self._queue_malformed_action_repair_note(
-                    cm,
-                    last_response,
-                    mode=config.mode,
-                    codeact_enabled=response_data.get("codeact_enabled", True),
+                codeact_enabled = response_data.get("codeact_enabled", True)
+                if (
+                    not iteration_results
+                    and codeact_enabled
+                    and self._looks_like_malformed_action_output(last_response)
                 ):
+                    loop_state.malformed_repair_count += 1
+                    if loop_state.malformed_repair_count > MAX_MALFORMED_ACTION_REPAIRS:
+                        logger.warning(
+                            "Malformed tool syntax %s times without an ordinary "
+                            "turn; stopping.",
+                            loop_state.malformed_repair_count,
+                        )
+                        completion_status = limit_status
+                        break
+                    self._queue_malformed_action_repair_note(
+                        cm, last_response, mode=config.mode
+                    )
                     await self._save_conversation(cm, async_save=config.async_save)
                     if config.message_callback:
                         await config.message_callback(
@@ -1987,12 +2029,15 @@ class Engine:
                         )
                     continue
 
+                loop_state.output_continuation_count = 0
+                loop_state.malformed_repair_count = 0
+
                 # WALLET_GUARD: Consolidated termination checks
                 should_break, guard_status = self._check_wallet_guard_termination(
                     last_response,
                     iteration_results,
                     mode=config.mode,
-                    codeact_enabled=response_data.get("codeact_enabled", True),
+                    codeact_enabled=codeact_enabled,
                 )
                 if should_break:
                     if self._queue_stall_recovery(cm, guard_status):
@@ -2003,23 +2048,26 @@ class Engine:
                             cm,
                             guard_status,
                         )
-                    completion_status = guard_status or "implicit_completion"
+                    completion_status = guard_status or config.default_completion_status
                     break
 
             else:
                 # The loop condition expired without an explicit or guarded break.
-                if (
-                    config.token_budget is not None
-                    and int(cumulative_usage.get("total_tokens", 0) or 0)
-                    >= config.token_budget
-                ):
+                if budget_spent():
                     completion_status = "budget_limited"
                 else:
-                    completion_status = (
-                        "max_iterations"
-                        if config.mode == "response"
-                        else "iterations_exceeded"
-                    )
+                    completion_status = limit_status
+
+        except asyncio.CancelledError:
+            # Keep what the run already did; the caller decides what a cancel
+            # means. The provider step has already discarded its stream.
+            try:
+                cm.save()
+            except Exception:
+                logger.warning(
+                    "Failed to save conversation after cancellation", exc_info=True
+                )
+            raise
 
         except LLMEmptyResponseError as e:
             cumulative_usage = _accumulate_usage(
@@ -2028,6 +2076,8 @@ class Engine:
             )
             logger.warning(f"LLM returned empty response during {config.mode}: {e}")
             completion_status = "llm_empty_response_error"
+            if config.mode == "response":
+                last_response = f"Error occurred: {e}"
             if config.message_callback:
                 await config.message_callback(f"LLM Empty Response: {str(e)}", "error")
 
@@ -2046,6 +2096,8 @@ class Engine:
             completion_status = (
                 "provider_recoverable_error" if e.retryable else "provider_error"
             )
+            if config.mode == "response":
+                last_response = f"Provider error occurred: {e}"
             if config.message_callback:
                 await config.message_callback(f"Provider Error: {str(e)}", "error")
 
@@ -2068,6 +2120,8 @@ class Engine:
             )
             logger.error(f"Error in {config.mode} loop: {str(e)}")
             completion_status = "error"
+            if config.mode == "response":
+                last_response = f"Error occurred: {e}"
             if config.message_callback:
                 await config.message_callback(f"Error: {str(e)}", "error")
 
@@ -2286,10 +2340,11 @@ class Engine:
         """
         Multi-step conversational loop for natural conversation flow.
 
-        Termination conditions (in priority order):
-        1. No actions taken in an iteration (natural provider completion)
-        2. Legacy `finish_response` compatibility signal
-        3. Max iterations reached
+        Runs ``_iteration_loop`` in response mode, so it ends by the same rules
+        as ``run_task``: the model answers without tool calls (``completed``),
+        a completed legacy ``finish_response`` call, a stop request
+        (``stopped``), the iteration or recovery-turn limit (``max_iterations``),
+        or an error. A failure is also reported as the assistant response.
 
         Each iteration creates separate messages in the conversation.
 
@@ -2329,203 +2384,25 @@ class Engine:
                 model_config=model_config_override,
             )
         )
-        all_action_results: List[Dict[str, Any]] = []
         try:
             self.current_iteration = 0
             self.start_time = datetime.utcnow()
             cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
             cm.conversation.prepare_conversation(prompt, image_paths=image_paths)
-
-            last_response = ""
-            latest_usage: Dict[str, Any] = {}
-            final_status = "completed"
-
-            # Reset loop state for this run
-            self._get_loop_state().reset()
-
-            while max_iters is None or self.current_iteration < max_iters:
-                self.current_iteration += 1
-                logger.debug(
-                    "Engine iteration %s (run_response)", self.current_iteration
-                )
-
-                # Check for external stop conditions
-                if await self._check_stop():
-                    break
-
-                # NOTE: Pre-iteration finalize removed - post-iteration finalize (after _llm_step) handles cleanup
-                # The _llm_step finalize gets content for parsing, post-iteration finalize ensures UI boundaries
-
-                # Determine effective streaming flag
-                streaming_flag = (
+            config = LoopConfig(
+                mode="response",
+                termination_action="finish_response",
+                streaming=(
                     streaming
                     if streaming is not None
                     else self.settings.streaming_default
-                )
-
-                # Execute LLM step with streaming support
-                response_data = await self._llm_step(
-                    tools_enabled=True,
-                    streaming=streaming_flag,
-                    stream_callback=stream_callback,
-                    agent_id=self.current_agent_id,
-                )
-
-                last_response = response_data.get("assistant_response", "")
-                iteration_results = response_data.get("action_results", [])
-                usage_data = response_data.get("usage")
-                if isinstance(usage_data, dict) and usage_data:
-                    latest_usage = _accumulate_usage(latest_usage, usage_data)
-                last_response = self._suppress_empty_tool_only_placeholder(
-                    cm,
-                    last_response,
-                    iteration_results,
-                )
-
-                # Debug: Log response length and action count to help diagnose loops
-                logger.debug(
-                    f"[LOOP DEBUG] run_response iter {self.current_iteration}: response_len={len(last_response or '')}, actions={len(iteration_results)}"
-                )
-
-                # CRITICAL: Finalize streaming message after each iteration to force separate UI panels
-                if hasattr(cm, "core") and cm.core:
-                    # Force finalize any active streaming to break message boundaries
-                    session = (
-                        cm.get_current_session()
-                        if hasattr(cm, "get_current_session")
-                        else None
-                    )
-                    session_id = getattr(session, "id", None)
-                    cm.core.finalize_streaming_message(
-                        agent_id=self.current_agent_id,
-                        session_id=session_id,
-                        conversation_id=session_id,
-                    )
-
-                    # Small delay to allow UI to process the message boundary
-                    await asyncio.sleep(UI_ASYNC_SLEEP_SECONDS)
-
-                # Save conversation state after each iteration (async to avoid blocking event loop)
-                await self._save_conversation(cm, async_save=True)
-
-                # Collect all action results
-                if iteration_results:
-                    all_action_results.extend(iteration_results)
-
-                if self.agent_mailbox.has_pending(
-                    self.current_agent_id or self.default_agent_id,
-                    self._conversation_session_id(cm) or "",
-                ):
-                    continue
-
-                # Check legacy finish_response compatibility signal.
-                # Normal native-provider turns now complete by returning final text
-                # with no tool calls, matching Codex/OpenCode/Hermes loop shape.
-                # NOTE: Only check finish_response here - finish_task is for task mode (run_task)
-                finish_response_called = any(
-                    isinstance(r, dict) and r.get("action") == "finish_response"
-                    for r in iteration_results
-                )
-                if finish_response_called:
-                    logger.debug(
-                        "Response completion: legacy finish_response tool called"
-                    )
-                    break
-
-                # Debug: Check if LLM mentioned finish_response but didn't format it correctly
-                if (
-                    last_response
-                    and "finish_response" in last_response.lower()
-                    and not finish_response_called
-                ):
-                    logger.warning(
-                        f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}..."
-                    )
-
-                if response_data.get("finish_reason") == FinishReason.LENGTH:
-                    if max_iters is None or self.current_iteration < max_iters:
-                        cm.conversation.add_message(
-                            "system", _OUTPUT_BOUNDARY_CONTINUATION
-                        )
-                        await self._save_conversation(cm, async_save=True)
-                    continue
-
-                if not iteration_results and self._queue_malformed_action_repair_note(
-                    cm,
-                    last_response,
-                    mode="response",
-                    codeact_enabled=response_data.get("codeact_enabled", True),
-                ):
-                    await self._save_conversation(cm, async_save=True)
-                    continue
-
-                # WALLET_GUARD: Consolidated termination checks
-                should_break, guard_status = self._check_wallet_guard_termination(
-                    last_response,
-                    iteration_results,
-                    mode="response",
-                    codeact_enabled=response_data.get("codeact_enabled", True),
-                )
-                if should_break:
-                    if self._queue_stall_recovery(cm, guard_status):
-                        await self._save_conversation(cm, async_save=True)
-                        continue
-                    if guard_status:
-                        final_status = guard_status
-                    if guard_status in _TOOL_ONLY_STALL_NOTES:
-                        last_response = await self._record_tool_only_stall_note(
-                            cm,
-                            guard_status,
-                        )
-                    break
-
-            # Determine final status
-            if (
-                final_status == "completed"
-                and max_iters is not None
-                and self.current_iteration >= max_iters
-            ):
-                final_status = "max_iterations"
-
-            return {
-                "assistant_response": last_response,
-                "iterations": self.current_iteration,
-                "action_results": all_action_results,
-                "usage": latest_usage,
-                "status": final_status,
-                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
-            }
-
-        except LLMProviderError as e:
-            logger.warning(
-                "Provider request failed in run_response: retryable=%s detail=%s",
-                e.retryable,
-                str(e),
-            )
-            error_response = f"Provider error occurred: {str(e)}"
-            return {
-                "assistant_response": error_response,
-                "iterations": self.current_iteration,
-                "action_results": all_action_results,
-                "usage": {},
-                "status": (
-                    "provider_recoverable_error" if e.retryable else "provider_error"
                 ),
-                "recoverable": e.retryable,
-                "error": e.error.to_dict(),
-                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
-            }
-
-        except Exception as e:
-            logger.error(f"Error in run_response: {str(e)}")
-            return {
-                "assistant_response": f"Error occurred: {str(e)}",
-                "iterations": self.current_iteration,
-                "action_results": all_action_results,
-                "usage": {},
-                "status": "error",
-                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
-            }
+                stream_callback=stream_callback,
+                manage_streaming_state=True,
+                async_save=True,
+                default_completion_status="completed",
+            )
+            return await self._iteration_loop(cm, config, max_iters)
         finally:
             _CURRENT_ENGINE_RUN_STATE.reset(token)
 
@@ -2730,7 +2607,7 @@ class Engine:
                 message_callback=(
                     task_message_callback_wrapper if message_callback else None
                 ),
-                default_completion_status="iterations_exceeded",
+                default_completion_status="implicit_completion",
                 token_budget=token_budget,
             )
 
@@ -3897,7 +3774,9 @@ class Engine:
                 len(assistant_response or ""),
                 self._handler_has_pending_tool_call(api_client),
             )
-        except LLMProviderError:
+        except BaseException:
+            # Any failure here, including cancellation, leaves an uncommitted
+            # stream buffer behind. Discard it whatever the cause.
             self._abort_streaming_response(
                 cm,
                 streaming,
@@ -4010,41 +3889,51 @@ class Engine:
     async def _llm_stream(self, prompt: str, *, agent_id: Optional[str] = None):
         """Helper to stream chunks to caller."""
         loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        done = object()
 
-        async def run():
-            # Prepare conversation
-            cm, api_client, _tm, _ae = self._resolve_components(
-                agent_id or self.current_agent_id
-            )
-            cm.conversation.prepare_conversation(prompt)
+        async def run() -> None:
+            try:
+                # Prepare conversation
+                cm, api_client, _tm, _ae = self._resolve_components(
+                    agent_id or self.current_agent_id
+                )
+                cm.conversation.prepare_conversation(prompt)
 
-            # Inner callback forwards chunks into queue
-            async def _cb(chunk: str):
-                await queue.put(chunk)
+                # Queue chunks directly so they keep their order and cannot
+                # land after the end marker.
+                def _cb(chunk: str, *_args: Any, **_kwargs: Any) -> None:
+                    queue.put_nowait(chunk)
 
-            # Call provider with streaming enabled
-            messages = cm.conversation.get_formatted_messages()
-            messages = self._apply_agent_mode_notice(messages)
-            full_response = await api_client.get_response(
-                messages,
-                stream=True,
-                stream_callback=lambda c: asyncio.create_task(_cb(c)),
-            )
+                # Call provider with streaming enabled
+                messages = cm.conversation.get_formatted_messages()
+                messages = self._apply_agent_mode_notice(messages)
+                full_response = await api_client.get_response(
+                    messages,
+                    stream=True,
+                    stream_callback=_cb,
+                )
 
-            # Persist full assistant response now that streaming done
-            # add_assistant_message automatically strips action tags
-            cm.conversation.add_assistant_message(full_response)
-            cm.save()
+                # Persist full assistant response now that streaming done
+                # add_assistant_message automatically strips action tags
+                cm.conversation.add_assistant_message(full_response)
+                cm.save()
+            finally:
+                # Always end the stream, including when the provider fails.
+                queue.put_nowait(done)
 
-            await queue.put(None)  # sentinel
-
-        loop.create_task(run())
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                break
-            yield chunk
+        producer = loop.create_task(run())
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is done:
+                    break
+                yield chunk
+            # Surface a provider failure to the consumer.
+            await producer
+        finally:
+            if not producer.done():
+                producer.cancel()
 
     async def _check_stop(self) -> bool:
         for cond in self.stop_conditions:
@@ -4068,7 +3957,7 @@ class Engine:
     ):
         return await self.run_single_turn(
             prompt,
-            image_path=image_path,
+            image_paths=[image_path] if image_path else None,
             tools_enabled=tools_enabled,
             streaming=streaming,
             stream_callback=stream_callback,

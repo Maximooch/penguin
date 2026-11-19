@@ -10,6 +10,7 @@ from fastapi import (
     Response,
     UploadFile,
     File,
+    Header,
     Query,
 )  # type: ignore
 from pydantic import BaseModel, ValidationError  # type: ignore
@@ -1060,6 +1061,9 @@ _INLINE_FILE_REFERENCE_PATTERN = re.compile(
 )
 
 
+_VARIANT_TARGET_KEY = "_target_model_config"
+
+
 def _apply_reasoning_variant_override(
     core: PenguinCore,
     variant: Optional[str],
@@ -1072,11 +1076,17 @@ def _apply_reasoning_variant_override(
     if callable(capabilities_getter):
         capabilities = capabilities_getter()
         supported_efforts = getattr(capabilities, "reasoning_efforts", None)
-    return apply_llm_reasoning_variant_override(
-        model_config or getattr(core, "model_config", None),
+    target = model_config or getattr(core, "model_config", None)
+    snapshot = apply_llm_reasoning_variant_override(
+        target,
         variant,
         supported_efforts=supported_efforts,
     )
+    if isinstance(snapshot, dict):
+        # Remember which config was changed so the restore cannot land on a
+        # different one (the request copy versus the shared core config).
+        snapshot[_VARIANT_TARGET_KEY] = target
+    return snapshot
 
 
 def _restore_reasoning_variant_override(
@@ -1085,8 +1095,9 @@ def _restore_reasoning_variant_override(
     *,
     model_config: Optional[Any] = None,
 ) -> None:
+    recorded = snapshot.get(_VARIANT_TARGET_KEY) if isinstance(snapshot, dict) else None
     restore_llm_reasoning_variant_override(
-        model_config or getattr(core, "model_config", None),
+        model_config or recorded or getattr(core, "model_config", None),
         snapshot,
     )
 
@@ -1640,6 +1651,13 @@ class ApprovalAction(BaseModel):
 
     scope: str = "once"  # once | session | pattern
     pattern: Optional[str] = None  # Required if scope is "pattern"
+    session_id: Optional[str] = None  # The session the reply comes from
+
+
+class ApprovalDenyAction(BaseModel):
+    """Request body for denying a request."""
+
+    session_id: Optional[str] = None  # The session the reply comes from
 
 
 class PreApprovalRequest(BaseModel):
@@ -1656,6 +1674,7 @@ class PermissionReplyAction(BaseModel):
 
     reply: str  # once | always | reject
     message: Optional[str] = None
+    sessionID: Optional[str] = None  # The session the reply comes from
 
 
 class QuestionReplyAction(BaseModel):
@@ -1931,30 +1950,40 @@ def _setup_approval_websocket_callbacks():
         # Create async-safe callback wrappers
         def on_request_created(request):
             """Callback when an approval request is created."""
+            request_dict = request.to_dict()
+            # The session event must not depend on the WebSocket send: a
+            # request can be created off the event loop, where that send fails.
             try:
-                request_dict = request.to_dict()
-                # Schedule the coroutine in the event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(
-                        _approval_ws_manager.send_approval_required(request_dict)
-                    )
-                else:
-                    loop.run_until_complete(
-                        _approval_ws_manager.send_approval_required(request_dict)
-                    )
-
                 _schedule_opencode_event(
                     "permission.asked",
                     _approval_request_to_permission_payload(request_dict),
                 )
             except Exception as e:
+                logger.error(f"Error emitting permission.asked event: {e}")
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(
+                        _approval_ws_manager.send_approval_required(request_dict)
+                    )
+                else:
+                    loop.run_until_complete(
+                        _approval_ws_manager.send_approval_required(request_dict)
+                    )
+            except Exception as e:
                 logger.error(f"Error sending approval_required event: {e}")
 
         def on_request_resolved(request):
             """Callback when an approval request is resolved."""
+            request_dict = request.to_dict()
             try:
-                request_dict = request.to_dict()
+                _schedule_opencode_event(
+                    "permission.replied",
+                    _approval_request_to_permission_reply_payload(request_dict),
+                )
+            except Exception as e:
+                logger.error(f"Error emitting permission.replied event: {e}")
+            try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     asyncio.create_task(
@@ -1964,11 +1993,6 @@ def _setup_approval_websocket_callbacks():
                     loop.run_until_complete(
                         _approval_ws_manager.send_approval_resolved(request_dict)
                     )
-
-                _schedule_opencode_event(
-                    "permission.replied",
-                    _approval_request_to_permission_reply_payload(request_dict),
-                )
             except Exception as e:
                 logger.error(f"Error sending approval_resolved event: {e}")
 
@@ -2444,8 +2468,9 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
         ui_handlers.append((event_type.value, _on_ui_event))
 
     try:
-        while True:
-            await asyncio.sleep(1.0)
+        # Read the socket so a disconnect is seen; client messages are ignored.
+        while (await websocket.receive()).get("type") != "websocket.disconnect":
+            pass
     except WebSocketDisconnect:
         pass
     finally:
@@ -3951,16 +3976,10 @@ async def _process_chat_message(
 
         if request_session_id:
             request_task = asyncio.current_task()
-            if request_task is not None:
-                tasks_map = getattr(core, "_opencode_process_tasks", None)
-                if not isinstance(tasks_map, dict):
-                    tasks_map = {}
-                    setattr(core, "_opencode_process_tasks", tasks_map)
-                tasks = tasks_map.get(request_session_id)
-                if not isinstance(tasks, set):
-                    tasks = set()
-                    tasks_map[request_session_id] = tasks
-                tasks.add(request_task)
+            if process_lifecycle.track_session_task(
+                core, request_session_id, request_task
+            ):
+                tasks = process_lifecycle.session_tasks(core, request_session_id)
                 request_tracked = True
                 _request_log_debug(
                     "chat.trace.track request=%s session=%s task=%s tracked=%s session_tasks=%s",
@@ -4253,11 +4272,8 @@ async def _process_chat_message(
             request_gate = _get_session_request_gate(core, request_session_id)
             gate_locked_before = request_gate.locked()
             gate_wait_started = time.perf_counter()
-            active_requests = getattr(core, "_opencode_active_requests", {})
-            active_request_count = (
-                active_requests.get(request_session_id, 0)
-                if isinstance(active_requests, dict) and request_session_id
-                else 0
+            active_request_count = process_lifecycle.active_request_count(
+                core, request_session_id
             )
             _request_log_debug(
                 "chat.trace.before_process request=%s session=%s gate=%s gate_locked=%s active=%s cm=%s tracked=%s ctx=%s",
@@ -4416,14 +4432,8 @@ async def _process_chat_message(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         _restore_reasoning_variant_override(core, reasoning_variant_snapshot)
-        if request_tracked and request_session_id and request_task is not None:
-            tasks_map = getattr(core, "_opencode_process_tasks", None)
-            if isinstance(tasks_map, dict):
-                tasks = tasks_map.get(request_session_id)
-                if isinstance(tasks, set):
-                    tasks.discard(request_task)
-                    if not tasks:
-                        tasks_map.pop(request_session_id, None)
+        if request_tracked:
+            process_lifecycle.untrack_session_task(core, request_session_id, request_task)
         for temp_file in temp_image_files:
             try:
                 Path(temp_file).unlink(missing_ok=True)
@@ -4439,8 +4449,11 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
     _setup_approval_websocket_callbacks()
     _setup_question_event_callbacks()
 
-    response_queue = asyncio.Queue()
     sender_task = None
+    # The pending read of the client's next message. While a message is being
+    # processed it doubles as the disconnect watch; a message it returns is
+    # handled on the next turn of the loop.
+    receive_task: asyncio.Task | None = None
 
     # Task to send messages from the queue to the client
     async def sender(queue: asyncio.Queue):
@@ -4555,15 +4568,21 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
     try:
         while True:  # Keep handling incoming client messages
             # Guard receive_json against client disconnect
+            if receive_task is None:
+                receive_task = asyncio.create_task(websocket.receive_json())
             try:
-                data = await websocket.receive_json()  # Wait for a request from client
+                data = await receive_task
             except (WebSocketDisconnect, RuntimeError) as e:
                 logger.info(f"Client disconnected during receive_json: {e}")
                 break  # Exit the loop cleanly
+            finally:
+                receive_task = None
 
             logger.info(f"Received request from client: {data.get('text', '')[:50]}...")
 
-            # Start a new sender task for this message
+            # Each message gets its own queue, so anything a previous reply
+            # emits late cannot reach (or end) this one.
+            response_queue: asyncio.Queue = asyncio.Queue()
             sender_task = asyncio.create_task(sender(response_queue))
             logger.info("Sender task started for this message.")
 
@@ -4716,7 +4735,9 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
 
                 # Register UI event handler for tool events and other UI updates
                 async def _stream_ui_event_handler(
-                    event_type: str, data: Dict[str, Any]
+                    event_type: str,
+                    data: Dict[str, Any],
+                    request_session: str | None = effective_session_id,
                 ):
                     # Skip if websocket is not connected
                     try:
@@ -4724,6 +4745,13 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                             return
                     except Exception:
                         return  # Can't check state, assume disconnected
+                    # The event bus is shared by every session; forward only
+                    # this request's session. A request without a session id
+                    # keeps receiving every event, as before.
+                    if request_session and (
+                        data.get("session_id") or data.get("conversation_id")
+                    ) != request_session:
+                        return
 
                     try:
                         if event_type == "tool":
@@ -4762,10 +4790,13 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
 
                 # Define a per-request callback that preserves message_type
                 async def per_request_stream_callback(
-                    chunk: str, message_type: str = "assistant"
+                    chunk: str,
+                    message_type: str = "assistant",
+                    *,
+                    queue: asyncio.Queue = response_queue,
                 ):
                     try:
-                        await response_queue.put(
+                        await queue.put(
                             {
                                 "token": chunk,
                                 "type": message_type,
@@ -4840,7 +4871,17 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                             )
                         )
 
-                    # Wait for the core process to finish
+                    # Keep reading the socket while the message is processed,
+                    # so a client that leaves stops the work it started.
+                    receive_task = asyncio.create_task(websocket.receive_json())
+                    await asyncio.wait(
+                        {process_task, receive_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if receive_task.done() and receive_task.exception() is not None:
+                        process_task.cancel()
+                        await asyncio.gather(process_task, return_exceptions=True)
+                        raise WebSocketDisconnect(code=1001)
                     process_result = await process_task
                 finally:
                     _restore_reasoning_variant_override(
@@ -5033,6 +5074,8 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
         logger.error(f"Unhandled error in websocket handler: {str(e)}", exc_info=True)
     finally:
         logger.info("Cleaning up stream_chat handler.")
+        if receive_task is not None and not receive_task.done():
+            receive_task.cancel()
         # Ensure sender task is cancelled if connection closes unexpectedly
         if sender_task and not sender_task.done():
             logger.info("Cancelling sender task due to handler exit.")
@@ -6801,9 +6844,8 @@ async def stream_task(websocket: WebSocket, core: PenguinCore = Depends(get_core
                         f"Error sending event to WebSocket: {e}", exc_info=True
                     )
 
-            # Store callback temporarily so Core._handle_run_mode_event can use it
-            core._temp_ws_callback = send_event_to_websocket
-
+            # RunMode installs this callback for its run and removes it when
+            # the run ends; a second socket cannot take over a running task.
             task_execution = asyncio.create_task(
                 core.start_run_mode(
                     name=name,
@@ -6811,6 +6853,7 @@ async def stream_task(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     continuous=continuous,
                     time_limit=time_limit,
                     context=context,
+                    websocket_event_callback=send_event_to_websocket,
                 )
             )
 
@@ -6833,10 +6876,6 @@ async def stream_task(websocket: WebSocket, core: PenguinCore = Depends(get_core
                             "data": {"message": f"Task execution failed: {task_err}"},
                         }
                     )
-            finally:
-                # Clean up temporary callback
-                if hasattr(core, "_temp_ws_callback"):
-                    delattr(core, "_temp_ws_callback")
 
             # Once the task is done (completed, errored, interrupted), we can break the loop
             # Assuming one task per connection.
@@ -7667,35 +7706,22 @@ async def orchestration_health(core: PenguinCore = Depends(get_core)):
 # ============================================================================
 # Memory System API Endpoints
 # ============================================================================
+async def _require_memory_provider(core: PenguinCore) -> Any:
+    """Return the tool manager's memory provider, initialising it on first use."""
+    provider = await core.tool_manager.ensure_memory_provider()
+    if provider is None:
+        raise HTTPException(status_code=503, detail="Memory system is not available")
+    return provider
+
+
 @router.post("/api/v1/memory/store")
 async def store_memory(
     request: MemoryStoreRequest, core: PenguinCore = Depends(get_core)
 ):
     """Store a new memory entry."""
     try:
-        # Use the ToolManager's memory functionality
-        tool_manager = core.tool_manager
-
-        # Check if memory provider is available
-        if (
-            not hasattr(tool_manager, "_memory_provider")
-            or tool_manager._memory_provider is None
-        ):
-            # Initialize memory provider
-            from penguin.memory.providers.factory import MemoryProviderFactory
-
-            memory_config = (
-                tool_manager.config.get("memory", {})
-                if hasattr(tool_manager.config, "get")
-                else {}
-            )
-            tool_manager._memory_provider = MemoryProviderFactory.create_provider(
-                memory_config
-            )
-            await tool_manager._memory_provider.initialize()
-
-        # Store the memory
-        memory_id = await tool_manager._memory_provider.add_memory(
+        provider = await _require_memory_provider(core)
+        memory_id = await provider.add_memory(
             content=request.content,
             metadata=request.metadata,
             categories=request.categories,
@@ -7707,6 +7733,8 @@ async def store_memory(
             "message": "Memory stored successfully",
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error storing memory: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -7756,19 +7784,27 @@ async def search_memory(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Declared before /memory/{memory_id}, which would otherwise match "stats".
+@router.get("/api/v1/memory/stats")
+async def get_memory_stats(core: PenguinCore = Depends(get_core)):
+    """Get memory system statistics."""
+    try:
+        provider = await core.tool_manager.ensure_memory_provider()
+        if provider is None:
+            return {"total_memories": 0, "status": "not_initialized"}
+        return await provider.get_memory_stats()
+
+    except Exception as e:
+        logger.error(f"Error getting memory stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/v1/memory/{memory_id}")
 async def get_memory(memory_id: str, core: PenguinCore = Depends(get_core)):
     """Get a specific memory by ID."""
     try:
-        # Access memory provider
-        tool_manager = core.tool_manager
-        if (
-            not hasattr(tool_manager, "_memory_provider")
-            or tool_manager._memory_provider is None
-        ):
-            raise HTTPException(status_code=500, detail="Memory system not initialized")
-
-        memory = await tool_manager._memory_provider.get_memory(memory_id)
+        provider = await _require_memory_provider(core)
+        memory = await provider.get_memory(memory_id)
         if not memory:
             raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")
 
@@ -7778,25 +7814,6 @@ async def get_memory(memory_id: str, core: PenguinCore = Depends(get_core)):
         raise
     except Exception as e:
         logger.error(f"Error retrieving memory: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/api/v1/memory/stats")
-async def get_memory_stats(core: PenguinCore = Depends(get_core)):
-    """Get memory system statistics."""
-    try:
-        tool_manager = core.tool_manager
-        if (
-            not hasattr(tool_manager, "_memory_provider")
-            or tool_manager._memory_provider is None
-        ):
-            return {"total_memories": 0, "status": "not_initialized"}
-
-        stats = await tool_manager._memory_provider.get_memory_stats()
-        return stats
-
-    except Exception as e:
-        logger.error(f"Error getting memory stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -8145,6 +8162,23 @@ async def update_session_access_settings(
     return update_access_settings(core, session_id, request.mode)
 
 
+def _authorize_permission_reply(request_id: str, *claimed_sessions: Any) -> None:
+    """Refuse (403 / 400) a reply that is not from the request's session."""
+    from penguin.web.services.permission_replies import (
+        PermissionReplyRefused,
+        authorize_permission_reply,
+    )
+
+    try:
+        authorize_permission_reply(
+            _get_approval_manager().get_request(request_id), *claimed_sessions
+        )
+    except PermissionReplyRefused as refused:
+        raise HTTPException(
+            status_code=refused.status_code, detail=str(refused)
+        ) from refused
+
+
 @router.get("/permission")
 @router.get("/api/v1/permission")
 async def list_pending_permissions(
@@ -8171,6 +8205,7 @@ async def list_pending_permissions(
 async def reply_permission_request(
     request_id: str,
     action: PermissionReplyAction,
+    x_penguin_session_id: Optional[str] = Header(None),
 ):
     """Reply to a pending permission request.
 
@@ -8188,15 +8223,19 @@ async def reply_permission_request(
                 detail=f"Permission request not found: {request_id}",
             )
 
+        _authorize_permission_reply(
+            request_id, action.sessionID, x_penguin_session_id
+        )
         existing_dict = existing.to_dict()
         if existing_dict.get("status") != "pending":
             return True
 
         reply = action.reply.strip().lower() if isinstance(action.reply, str) else ""
         if reply == "reject":
+            # Attach the message before resolving so listeners can see it.
+            if isinstance(action.message, str) and action.message.strip():
+                existing.context["message"] = action.message.strip()
             resolved = manager.deny(request_id)
-            if resolved and isinstance(action.message, str) and action.message.strip():
-                resolved.context["message"] = action.message.strip()
         elif reply == "once":
             resolved = manager.approve(request_id, scope=ApprovalScope.ONCE)
         elif reply == "always":
@@ -8506,6 +8545,7 @@ async def get_approval_request(request_id: str):
 async def approve_request(
     request_id: str,
     action: ApprovalAction = ApprovalAction(),
+    x_penguin_session_id: Optional[str] = Header(None),
 ):
     """Approve a pending approval request.
 
@@ -8519,6 +8559,7 @@ async def approve_request(
     try:
         from penguin.security.approval import ApprovalScope
 
+        _setup_approval_websocket_callbacks()
         manager = _get_approval_manager()
 
         # Parse scope
@@ -8540,6 +8581,9 @@ async def approve_request(
                 status_code=400, detail="Pattern is required when scope is 'pattern'"
             )
 
+        _authorize_permission_reply(
+            request_id, action.session_id, x_penguin_session_id
+        )
         result = manager.approve(request_id, scope=scope, pattern=action.pattern)
 
         if result is None:
@@ -8564,7 +8608,11 @@ async def approve_request(
 
 
 @router.post("/api/v1/approvals/{request_id}/deny")
-async def deny_request(request_id: str):
+async def deny_request(
+    request_id: str,
+    action: ApprovalDenyAction = ApprovalDenyAction(),
+    x_penguin_session_id: Optional[str] = Header(None),
+):
     """Deny a pending approval request.
 
     Args:
@@ -8574,7 +8622,11 @@ async def deny_request(request_id: str):
         The resolved approval request
     """
     try:
+        _setup_approval_websocket_callbacks()
         manager = _get_approval_manager()
+        _authorize_permission_reply(
+            request_id, action.session_id, x_penguin_session_id
+        )
         result = manager.deny(request_id)
 
         if result is None:

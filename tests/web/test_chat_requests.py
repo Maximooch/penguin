@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from penguin.core_runtime import process_lifecycle
 from penguin.system.task_cancellation import cancellation_owner
 from penguin.web.services.chat_requests import ChatRequestStore, execute_chat_request
 
@@ -299,14 +300,14 @@ async def test_execution_cancellation_distinguishes_abort_from_shutdown(
     started = asyncio.Event()
     cleaned = asyncio.Event()
     owner = SimpleNamespace(
-        _opencode_process_tasks={},
+        _opencode_session_runs={},
         _get_tui_adapter=lambda sid: SimpleNamespace(),
         _stream_manager=SimpleNamespace(get_active_agents=lambda: []),
     )
     monkeypatch.setattr(stream_events, "emit_opencode_session_status", AsyncMock())
 
     async def execute():
-        owner._opencode_process_tasks["s"] = {asyncio.current_task()}
+        process_lifecycle.track_session_task(owner, "s", asyncio.current_task())
         started.set()
         try:
             await asyncio.Event().wait()
@@ -336,7 +337,7 @@ async def test_execution_cancellation_distinguishes_abort_from_shutdown(
             await execute_chat_request(lambda: store, "s", "m", {}, execute) == result
         )
     else:
-        cancellation_owner(next(iter(owner._opencode_process_tasks["s"]))).cancel()
+        cancellation_owner(process_lifecycle.session_tasks(owner, "s")[0]).cancel()
         with pytest.raises(asyncio.CancelledError):
             await observer
         assert store.lookup("s", "m") == {"state": "accepted"}

@@ -86,9 +86,7 @@ def _build_core_with_stubs(
     core._stream_manager.stream_id = None
     core.event_types = {"message", "token_update", "error"}
     core._interrupted = False
-    core._opencode_abort_sessions = set()
-    core._opencode_active_requests = {}
-    core._opencode_process_tasks = {}
+    core._opencode_session_runs = {}
     return core
 
 

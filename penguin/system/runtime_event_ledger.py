@@ -21,6 +21,7 @@ from penguin.config import WORKSPACE_PATH
 from penguin.system.runtime_events import (
     RUNTIME_EVENT_SCHEMA_VERSION,
     redact_runtime_payload,
+    set_runtime_event_sequence_floor,
 )
 
 DEFAULT_LEDGER_MAX_EVENTS = 100_000
@@ -35,14 +36,15 @@ class RuntimeEventLedgerPolicy:
     """Retention and cleanup policy for the runtime event ledger.
 
     Attributes:
-        max_events: Maximum retained event rows before oldest-row cleanup.
+        max_events: Maximum retained event rows before oldest-row cleanup;
+            ``None`` or 0 means no count limit, like the other limits.
         max_age_seconds: Optional event-age retention window in seconds.
         max_bytes: Optional soft on-disk size limit for the SQLite database and
             WAL sidecar.
         cleanup_interval_seconds: Minimum seconds between automatic cleanups.
     """
 
-    max_events: int = DEFAULT_LEDGER_MAX_EVENTS
+    max_events: int | None = DEFAULT_LEDGER_MAX_EVENTS
     max_age_seconds: int | None = DEFAULT_LEDGER_MAX_AGE_DAYS * 24 * 60 * 60
     max_bytes: int | None = DEFAULT_LEDGER_MAX_BYTES
     cleanup_interval_seconds: float = DEFAULT_LEDGER_CLEANUP_INTERVAL_SECONDS
@@ -86,7 +88,7 @@ def policy_from_env() -> RuntimeEventLedgerPolicy:
         settings, with defaults for missing or malformed values.
     """
     return RuntimeEventLedgerPolicy(
-        max_events=_env_int(
+        max_events=_env_optional_int(
             "PENGUIN_RUNTIME_EVENT_LEDGER_MAX_EVENTS",
             DEFAULT_LEDGER_MAX_EVENTS,
         ),
@@ -120,17 +122,21 @@ def get_runtime_event_ledger(core: Any | None = None) -> RuntimeEventLedger:
         existing = getattr(core, _RUNTIME_EVENT_LEDGER_ATTR, None)
         if isinstance(existing, RuntimeEventLedger):
             return existing
-        ledger = RuntimeEventLedger(default_ledger_path(), policy=policy_from_env())
+        ledger = _open_ledger()
         setattr(core, _RUNTIME_EVENT_LEDGER_ATTR, ledger)
         return ledger
 
     global _PROCESS_LEDGER
     if _PROCESS_LEDGER is None:
-        _PROCESS_LEDGER = RuntimeEventLedger(
-            default_ledger_path(),
-            policy=policy_from_env(),
-        )
+        _PROCESS_LEDGER = _open_ledger()
     return _PROCESS_LEDGER
+
+
+def _open_ledger() -> RuntimeEventLedger:
+    """Open the ledger and continue each stream's sequence after what it holds."""
+    ledger = RuntimeEventLedger(default_ledger_path(), policy=policy_from_env())
+    set_runtime_event_sequence_floor(ledger.last_sequence)
+    return ledger
 
 
 class RuntimeEventLedger:
@@ -303,6 +309,27 @@ class RuntimeEventLedger:
             finally:
                 conn.close()
 
+    def last_sequence(self, stream_id: str) -> int:
+        """Return the highest retained sequence for a stream, or 0.
+
+        Args:
+            stream_id: RuntimeEvent stream id.
+
+        Returns:
+            The largest stored ``sequence`` for the stream, or 0 when none.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                self._ensure_schema(conn)
+                row = conn.execute(
+                    "SELECT MAX(sequence) FROM runtime_events WHERE stream_id = ?",
+                    (stream_id,),
+                ).fetchone()
+                return int(row[0] or 0) if row is not None else 0
+            finally:
+                conn.close()
+
     def replay_after(
         self,
         last_event_id: str,
@@ -470,8 +497,7 @@ class RuntimeEventLedger:
         conn.execute("DELETE FROM runtime_events WHERE event_time < ?", (cutoff_ms,))
 
     def _cleanup_by_count(self, conn: sqlite3.Connection) -> None:
-        if self.policy.max_events <= 0:
-            conn.execute("DELETE FROM runtime_events")
+        if self.policy.max_events is None or self.policy.max_events <= 0:
             return
         count = conn.execute("SELECT COUNT(*) AS count FROM runtime_events").fetchone()[
             "count"
@@ -500,6 +526,11 @@ class RuntimeEventLedger:
         conn.commit()
         if not self._checkpoint_wal(conn):
             return
+        # Reclaim free pages first, so only retained events count against
+        # the cap and rows are never deleted to pay for empty pages.
+        self._incremental_vacuum(conn)
+        conn.commit()
+        self._checkpoint_wal(conn)
         current_size = self._database_size_bytes(conn)
         if current_size <= max_bytes:
             return
@@ -546,7 +577,10 @@ class RuntimeEventLedger:
 
     def _incremental_vacuum(self, conn: sqlite3.Connection) -> None:
         try:
-            conn.execute("PRAGMA incremental_vacuum")
+            # The pragma frees one page per step. execute() steps it once on
+            # Python 3.11 (one page freed); executescript() runs it to
+            # completion on every supported version.
+            conn.executescript("PRAGMA incremental_vacuum;")
         except sqlite3.DatabaseError:
             pass
 
@@ -696,16 +730,6 @@ def _string_or_none(value: Any) -> str | None:
 
 def _positive_int_or_zero(value: Any) -> int:
     return value if isinstance(value, int) and value > 0 else 0
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw == "":
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
 
 
 def _env_optional_int(name: str, default: int | None) -> int | None:

@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 from typing import Any, Dict, Optional, Literal, List, Callable, Union
 
 import yaml  # type: ignore
-from dotenv import load_dotenv  # type: ignore
+from dotenv import find_dotenv, load_dotenv  # type: ignore
 
 # LinkAI Workspace Configuration
 # LINKAI_WORKSPACE_ID = os.getenv('LINKAI_WORKSPACE_ID')
@@ -527,11 +527,9 @@ class RuntimeConfig:
         
         logger.info(f"RuntimeConfig: Project root changed from {old_root} to {self._project_root}")
         
-        # Update environment variable for path_utils security checks
-        try:
-            os.environ['PENGUIN_CWD'] = self._project_root
-        except Exception:
-            pass
+        # path_utils security checks read the active root, which is the
+        # workspace in workspace mode.
+        os.environ['PENGUIN_CWD'] = self.active_root
         
         # Notify observers
         self._notify_observers('project_root', self._project_root)
@@ -564,6 +562,7 @@ class RuntimeConfig:
         self._workspace_root = str(resolved)
         
         logger.info(f"RuntimeConfig: Workspace root changed from {old_root} to {self._workspace_root}")
+        os.environ['PENGUIN_CWD'] = self.active_root
         
         # Notify observers
         self._notify_observers('workspace_root', self._workspace_root)
@@ -805,7 +804,15 @@ def _ensure_env_loaded():
         return
     _env_loaded = True
 
-    # 1) User-level: ~/.config/penguin/.env (or APPDATA equivalent) – provides persistent keys
+    # Precedence: variables already in the process (for example exported in
+    # the shell) > the project .env > the user-level .env. Without override the
+    # first value loaded for a key wins, so the project file is loaded first.
+    project_env = find_dotenv()
+    if project_env:
+        load_dotenv(dotenv_path=project_env, override=False)
+
+    # User-level: ~/.config/penguin/.env (or APPDATA equivalent) – persistent
+    # keys that fill in whatever the shell and project did not set.
     try:
         if os.name == 'posix':
             user_env_dir = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'penguin'
@@ -817,9 +824,6 @@ def _ensure_env_loaded():
     except Exception:
         # Non-fatal if user-level .env loading fails
         pass
-
-    # 2) Project-level: nearest .env up the CWD chain – overrides user-level values
-    load_dotenv(override=True)
 
 def _ensure_diagnostics_initialized():
     """Lazy-initialize diagnostics. Called on first diagnostics access."""

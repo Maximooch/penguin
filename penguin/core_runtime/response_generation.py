@@ -43,6 +43,7 @@ async def _fetch_assistant_response(
             )
         except asyncio.CancelledError:
             log.warning("APIClient response retrieval was cancelled")
+            raise
         except Exception as exc:
             log.error(
                 "Error during APIClient response retrieval: %s",
@@ -64,12 +65,15 @@ async def _fetch_assistant_response(
             continue
 
         log.warning("Empty response from API after %s attempts", max_retries)
-        return (
-            "I apologize, but I encountered an issue generating a response. "
-            "Please try again."
-        )
+        return None
 
     return None
+
+
+_EMPTY_RESPONSE_APOLOGY = (
+    "I apologize, but I encountered an issue generating a response. "
+    "Please try again."
+)
 
 
 async def get_response(
@@ -115,14 +119,16 @@ async def get_response(
 
         action_processing = await process_response_actions(
             owner,
-            assistant_response,
+            assistant_response or "",
             log=log,
         )
 
         owner.conversation_manager.save()
 
         full_response = {
-            "assistant_response": assistant_response,
+            # The apology is shown to the user but never saved as something
+            # the assistant said.
+            "assistant_response": assistant_response or _EMPTY_RESPONSE_APOLOGY,
             "actions": action_processing.actions,
             "action_results": action_processing.action_results,
             "metadata": {
@@ -130,6 +136,9 @@ async def get_response(
                 "max_iterations": max_iterations,
             },
         }
+
+        if not assistant_response:
+            full_response["error"] = "empty_response"
 
         log.debug(
             "ACTION RESULT TEST: System outputs visible to LLM: %s",

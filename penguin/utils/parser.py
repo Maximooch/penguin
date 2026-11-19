@@ -26,7 +26,6 @@ from penguin.multi.policy import (
     subagents_enabled,
 )
 from penguin.tools import ToolManager
-from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
 from penguin.system.execution_context import get_current_execution_context
 from penguin.tools.image_tools import ReadImageTool
@@ -96,11 +95,8 @@ class ActionType(Enum):
     PERPLEXITY_SEARCH = "perplexity_search"
     # REPL, iPython, shell, bash, zsh, networking, file_management, task management, etc.
     # TODO: Add more actions as needed
-    # TODO(process-runtime): These ActionXML process tags still use the legacy
-    # ProcessManager path below. Native provider tools with the same public
-    # `process_*` names route through ToolManager/ProcessRuntime instead.
-    # Migrate or deprecate this ActionXML surface in a follow-up PR so the two
-    # protocols do not keep different payload shapes and lifecycle semantics.
+    # These ActionXML process tags take "name: command" style payloads but run
+    # on the same ToolManager ProcessRuntime as the native `process_*` tools.
     PROCESS_START = "process_start"
     PROCESS_STOP = "process_stop"
     PROCESS_STATUS = "process_status"
@@ -1119,7 +1115,6 @@ class ActionExecutor:
         """
         self.tool_manager = tool_manager
         self.task_manager = task_manager
-        self.process_manager = ProcessManager()
         self.current_process = None
         self.conversation_system = conversation_system
         try:
@@ -1623,6 +1618,27 @@ class ActionExecutor:
             ]
         return diagnostics
 
+    def capability_denial(self, action_name: str) -> Optional[str]:
+        """Return a denial when the startup capability policy excludes an action.
+
+        Some action handlers do not go through ``ToolManager.execute_tool``, so
+        the policy is applied here, before any handler runs.
+
+        Callers that record a result status must call this first and record a
+        denial as an error: ``execute_action`` returns the denial as text, and
+        text alone reads as a completed action (a denied ``finish_task`` would
+        end the task).
+        """
+
+        policy = getattr(self.tool_manager, "tool_capability_policy", None)
+        if policy is None or not policy.restricted:
+            return None
+        resolve = getattr(self.tool_manager, "_canonical_tool_name", None)
+        canonical = resolve(action_name) if callable(resolve) else action_name
+        if policy.allows(action_name, canonical):
+            return None
+        return policy.denial_json(action_name)
+
     async def execute_action(self, action: CodeActAction) -> str:
         """Execute an action and emit UI events if a callback is provided."""
         logger.debug(f"Attempting to execute action: {action.action_type.value}")
@@ -1647,6 +1663,9 @@ class ActionExecutor:
         import uuid
 
         action_id = str(uuid.uuid4())[:8]
+        denial = self.capability_denial(action.action_type.value)
+        if denial is not None:
+            return denial
         handler_params = self._prepare_action_params(action, action_id)
         if (
             action.action_type.value in SUBAGENT_TOOL_NAMES
@@ -2021,49 +2040,103 @@ class ActionExecutor:
         # The results are already formatted as a string by the PerplexityProvider
         return results
 
+    def _process_scope(self) -> tuple[Any, tuple[str, str], str | None]:
+        """The shared process runtime, this request's owner and its directory."""
+        from penguin.tools.process_tools import process_owner
+
+        context = get_current_execution_context()
+        context_dict = context.as_dict() if context else {}
+        return (
+            self.tool_manager.process_runtime,
+            process_owner(context_dict),
+            context_dict.get("directory"),
+        )
+
+    def _owned_process(self, name: str) -> tuple[Any, tuple[str, str]] | None:
+        runtime, owner, _directory = self._process_scope()
+        record = runtime._processes.get(name)
+        if record is None or record.owner != owner:
+            return None
+        return runtime, owner
+
     async def _process_start(self, params: str) -> str:
-        # TODO(process-runtime): Legacy ActionXML compatibility path. Native
-        # `process_start` uses ToolManager.process_runtime with JSON args
-        # (`command`, optional `cwd`/`env`) and returns a process_id; this older
-        # path expects "name: command" and stores named processes separately.
-        logger.debug(f"Starting process with params: {params}")
-        name, command = params.split(":", 1)
-        return await self.process_manager.start_process(name.strip(), command.strip())
+        # ActionXML compatibility: "name: command" starts a process on the same
+        # ProcessRuntime as the native process tools, using the name as its id.
+        name, command = (part.strip() for part in params.split(":", 1))
+        runtime, owner, directory = self._process_scope()
+        result = await asyncio.to_thread(
+            runtime.start,
+            command,
+            cwd=directory,
+            process_id=name,
+            owner=owner,
+            stdin=True,
+        )
+        if result.get("status") == "error":
+            return f"Error starting process '{name}': {result.get('error')}"
+        return f"Process '{name}' started"
 
     async def _process_stop(self, params: str) -> str:
-        return await self.process_manager.stop_process(params.strip())
+        name = params.strip()
+        if self._owned_process(name) is None:
+            return f"Process '{name}' not found"
+        runtime, _owner, _directory = self._process_scope()
+        result = await asyncio.to_thread(runtime.stop, name)
+        if self.current_process == name:
+            self.current_process = None
+        return f"Process '{name}' stopped\n{result.get('result', '')}"
 
     async def _process_status(self, params: str) -> str:
-        return await self.process_manager.get_process_status(params.strip())
+        name = params.strip()
+        if self._owned_process(name) is None:
+            return f"Process '{name}' not found"
+        runtime, _owner, _directory = self._process_scope()
+        return runtime.status(name).get("result", "")
 
     async def _process_list(self, params: str) -> str:
-        processes = await self.process_manager.list_processes()
-        return "\n".join([f"{name}: {status}" for name, status in processes.items()])
+        runtime, owner, _directory = self._process_scope()
+        processes = runtime.list_processes(owner=owner)
+        return "\n".join(f"{name}: {status}" for name, status in processes.items())
+
+    async def _read_new_output(self, name: str, wait_ms: int) -> str:
+        runtime, owner, _directory = self._process_scope()
+        result = await asyncio.to_thread(
+            runtime.poll,
+            name,
+            since_sequence=None,
+            wait_ms=wait_ms,
+            consumer_id=owner[1],
+        )
+        return result.get("output") or ""
 
     async def _process_enter(self, params: str) -> str:
         name = params.strip()
-        reader = await self.process_manager.enter_process(name)
-        if reader:
-            self.current_process = name
-            initial_output = await reader.read(1024)
-            return (
-                f"Entered process '{name}'. Initial output:\n{initial_output.decode()}"
-            )
-        return f"Failed to enter process '{name}'"
+        owned = self._owned_process(name)
+        if owned is None or owned[0].status(name).get("process_status") != "running":
+            return f"Failed to enter process '{name}'"
+        self.current_process = name
+        initial_output = await self._read_new_output(name, wait_ms=0)
+        return f"Entered process '{name}'. Initial output:\n{initial_output}"
 
     async def _process_send(self, params: str) -> str:
-        if not self.current_process:
+        name = self.current_process
+        if not name or self._owned_process(name) is None:
             return "Not currently in any process"
-        return await self.process_manager.send_command(
-            self.current_process, params.strip()
+        runtime, _owner, _directory = self._process_scope()
+        written = await asyncio.to_thread(
+            runtime.write_stdin, name, f"{params.strip()}\n"
         )
+        if written.get("status") == "error":
+            return f"Error sending command: {written.get('error')}"
+        output = await self._read_new_output(name, wait_ms=2000)
+        return output or "Command sent, but no response received (timeout)"
 
     async def _process_exit(self, params: str) -> str:
+        # Leaving the session keeps the process and its input open.
         if not self.current_process:
             return "Not currently in any process"
-        result = await self.process_manager.exit_process(self.current_process)
-        self.current_process = None
-        return result
+        name, self.current_process = self.current_process, None
+        return f"Exited process '{name}'"
 
     async def _send_message(self, params: str) -> str:
         try:
@@ -2208,6 +2281,28 @@ class ActionExecutor:
     # --------------------------------------------------
     # Sub-agent tools (agents-as-tools)
     # --------------------------------------------------
+
+    def _agent_executor(self, core: Any, *, create: bool) -> Any:
+        """Return the background-agent executor the native tools also use.
+
+        Args:
+            core: The core the agents run in.
+            create: Create the executor when none exists yet.
+
+        Returns:
+            The tool manager's ``AgentExecutor`` (shared with wait, status and
+            shutdown), or the global one when no tool manager can supply it.
+        """
+        getter = getattr(self.tool_manager, "_get_agent_executor", None)
+        if callable(getter) and getattr(self.tool_manager, "_core", None) is core:
+            return getter(create=create)
+        from penguin.multi.executor import AgentExecutor, get_executor, set_executor
+
+        executor = get_executor()
+        if executor is None and create:
+            executor = AgentExecutor(core)
+            set_executor(executor)
+        return executor
 
     async def _spawn_sub_agent(self, params: str) -> str:
         """Spawn a sub-agent; defaults to isolated session and context-window.
@@ -2382,16 +2477,7 @@ class ActionExecutor:
             if background:
                 # Run agent in background using AgentExecutor
                 try:
-                    from penguin.multi.executor import (
-                        get_executor,
-                        set_executor,
-                        AgentExecutor,
-                    )
-
-                    executor = get_executor()
-                    if executor is None:
-                        executor = AgentExecutor(core)
-                        set_executor(executor)
+                    executor = self._agent_executor(core, create=True)
 
                     await executor.spawn_agent(
                         agent_id,
@@ -2752,9 +2838,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         cancelled_background = False
         try:
             # Try to cancel background task if running in executor
-            from penguin.multi.executor import get_executor
-
-            executor = get_executor()
+            executor = self._agent_executor(core, create=False)
             if executor:
                 status = executor.get_status(agent_id)
                 if status and status.get("state") in ("pending", "running"):
@@ -3056,17 +3140,9 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         if background:
             # Run delegated task in background using AgentExecutor
             try:
-                from penguin.multi.executor import (
-                    get_executor,
-                    set_executor,
-                    AgentExecutor,
-                )
                 import asyncio
 
-                executor = get_executor()
-                if executor is None:
-                    executor = AgentExecutor(core)
-                    set_executor(executor)
+                executor = self._agent_executor(core, create=True)
 
                 # Check if agent is already running
                 status = executor.get_status(child)

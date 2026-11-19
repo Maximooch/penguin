@@ -27,6 +27,12 @@ class ResponseActionProcessingResult:
     exit_continuation: bool
 
 
+def _capability_denial(owner: Any, action_name: str) -> str | None:
+    """Return the capability policy's denial for an action, if it denies it."""
+    check = getattr(owner.action_executor, "capability_denial", None)
+    return check(action_name) if callable(check) else None
+
+
 async def execute_action(
     owner: Any,
     action: Any,
@@ -36,6 +42,9 @@ async def execute_action(
     """Execute an action and return PenguinCore-compatible structured output."""
 
     action_name = _action_name(action)
+    denial = _capability_denial(owner, action_name)
+    if denial is not None:
+        return {"action": action_name, "result": denial, "status": "error"}
     try:
         result = await owner.action_executor.execute_action(action)
         return {
@@ -81,8 +90,11 @@ async def process_response_actions(
     """Parse and execute response actions with legacy PenguinCore semantics."""
 
     actions = parse_actions(assistant_response)
+    # A finish action the capability policy denies does not end the turn.
     exit_continuation = any(
-        _action_name(action) in FINISH_ACTIONS for action in actions
+        _action_name(action) in FINISH_ACTIONS
+        and _capability_denial(owner, _action_name(action)) is None
+        for action in actions
     )
 
     action_results: list[dict[str, Any]] = []
@@ -95,6 +107,18 @@ async def process_response_actions(
                     "result": "Action skipped due to interrupt",
                     "status": "interrupted",
                 }
+            )
+            continue
+
+        denial = _capability_denial(owner, action_name)
+        if denial is not None:
+            action_results.append(
+                {"action": action_name, "result": denial, "status": "error"}
+            )
+            owner.conversation_manager.add_action_result(
+                action_type=action_name,
+                result=denial,
+                status="error",
             )
             continue
 

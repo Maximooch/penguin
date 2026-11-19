@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from fastapi import HTTPException
 
+from penguin.core_runtime.process_lifecycle import SessionRun
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.routes import (
     SessionRevertRequest,
@@ -86,7 +87,7 @@ class _Core:
         self.event_bus = _EventBus()
         self._opencode_session_directories: dict[str, str] = {}
         self._opencode_stream_states: dict[str, dict[str, Any]] = {}
-        self._opencode_active_requests: dict[str, int] = {}
+        self._opencode_session_runs: dict[str, SessionRun] = {}
         self._tui_adapters: dict[str, Any] = {}
         self.conversation_manager = SimpleNamespace(
             session_manager=manager,
@@ -232,7 +233,7 @@ async def test_session_revert_alias_and_validation(tmp_path: Path) -> None:
         )
     assert exc.value.status_code == 400
 
-    core._opencode_active_requests[session.id] = 1
+    core._opencode_session_runs[session.id] = SessionRun(requests=1)
     with pytest.raises(HTTPException) as busy_exc:
         await session_revert(
             session.id,

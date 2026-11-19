@@ -241,3 +241,19 @@ def test_index_replace_failure_makes_save_fail_and_retry_updates_index(
     assert manager.save_session(session) is True
     persisted_index = json.loads(manager.index_path.read_text(encoding="utf-8"))
     assert persisted_index[session_id]["message_count"] == 1
+
+
+def test_backup_alone_is_restored_when_the_primary_is_missing(tmp_path: Path) -> None:
+    session_id = "session_backup_only"
+    primary, backup, _ = _paths(tmp_path, session_id)
+    expected = _session(session_id, "only the backup survived")
+    backup.write_text(expected.to_json(), encoding="utf-8")
+
+    loaded = _manager(tmp_path).load_session(session_id)
+
+    assert loaded is not None
+    assert loaded.id == session_id
+    assert [message.content for message in loaded.messages] == [
+        "only the backup survived"
+    ]
+    assert json.loads(primary.read_text(encoding="utf-8")) == expected.to_dict()

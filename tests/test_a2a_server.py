@@ -145,14 +145,15 @@ async def test_a2a_persists_authoritative_provider_failure(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_a2a_marks_engine_error_result_failed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("status", ["error", "llm_empty_response_error"])
+async def test_a2a_marks_engine_error_result_failed(tmp_path, monkeypatch, status):
     monkeypatch.setenv("PENGUIN_A2A_API_KEY", "a2a-test-secret")
     monkeypatch.setenv("PENGUIN_A2A_BASE_URL", "http://127.0.0.1:18125")
 
     async def failed_result(_request, _core, _http_request=None):
         return {
             "response": "Error occurred: model returned no answer",
-            "status": "error",
+            "status": status,
         }
 
     monkeypatch.setattr("penguin.web.routes._process_chat_message", failed_result)

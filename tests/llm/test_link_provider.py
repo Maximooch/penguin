@@ -349,12 +349,10 @@ async def test_chat_stream_preserves_text_reasoning_tools_and_usage() -> None:
     assert provider.get_last_usage()["total_tokens"] == 25
     assert provider.get_and_clear_pending_tool_calls() == [
         {
-            "id": "call-1",
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "arguments": '{"path":"a"}',
-            },
+            "item_id": None,
+            "call_id": "call-1",
+            "name": "read_file",
+            "arguments": '{"path":"a"}',
         }
     ]
 
@@ -424,7 +422,14 @@ async def test_responses_tool_turn_uses_two_distinct_link_invocations() -> None:
         [{"role": "user", "content": "Read notes.txt"}],
         tools=[{"type": "function", "name": "read_file"}],
     )
-    tool_calls = provider.get_and_clear_pending_tool_calls()
+    tool_calls = [
+        {
+            "id": call["call_id"],
+            "type": "function",
+            "function": {"name": call["name"], "arguments": call["arguments"]},
+        }
+        for call in provider.get_and_clear_pending_tool_calls()
+    ]
     result = await provider.get_response(
         [
             {"role": "user", "content": "Read notes.txt"},

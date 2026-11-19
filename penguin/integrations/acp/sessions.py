@@ -172,7 +172,19 @@ class SessionRegistry:
         return records
 
     def history(self, session: Any) -> list[Any]:
-        """Validate stored updates before replay; fail rather than omit records."""
+        """Validate stored updates before replay; fail rather than omit records.
+
+        Tool calls that never reported completion end with a synthesized
+        failure. Nothing is written; see ``replay_history``.
+        """
+        return self.replay_history(session)[0]
+
+    def replay_history(self, session: Any) -> tuple[list[Any], list[Any]]:
+        """Return the replay and, separately, the failures it synthesized.
+
+        The caller records the synthesized failures once the load that uses
+        them has succeeded, so a refused or failed load changes no history.
+        """
         try:
             updates = [
                 item
@@ -186,8 +198,24 @@ class SessionRegistry:
             ) from None
         pending: set[str] = set()
         background: set[str] = set()
+        # Native child envelopes: (child, call id) still open at the end.
+        child_pending: dict[tuple[str, str], None] = {}
         for update in updates:
             if isinstance(update, dict):
+                inner = update.get("update")
+                if not isinstance(inner, dict) or inner.get("sessionUpdate") not in {
+                    "tool_call",
+                    "tool_call_update",
+                }:
+                    continue
+                call = (str(update.get("acp_target")), str(inner.get("toolCallId")))
+                meta = inner.get("_meta")
+                if isinstance(meta, dict) and meta.get("penguin_process"):
+                    continue  # background processes are settled by ProcessTracker
+                if inner.get("status") in {"completed", "failed"}:
+                    child_pending.pop(call, None)
+                else:
+                    child_pending[call] = None
                 continue
             if update.session_update not in {"tool_call", "tool_call_update"}:
                 continue
@@ -197,6 +225,7 @@ class SessionRegistry:
                 pending.discard(update.tool_call_id)
             else:
                 pending.add(update.tool_call_id)
+        synthesized: list[Any] = []
         for call_id in sorted(pending - background):
             failed = ToolCallProgress(
                 session_update="tool_call_update",
@@ -211,6 +240,26 @@ class SessionRegistry:
                     )
                 ],
             )
-            updates.append(failed)
-            self.record(session.id, failed)
-        return updates
+            synthesized.append(failed)
+        for target, call_id in child_pending:
+            synthesized.append(
+                {
+                    "acp_target": target,
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": call_id,
+                        "status": "failed",
+                        "content": [
+                            {
+                                "type": "content",
+                                "content": {
+                                    "type": "text",
+                                    "text": "Connection ended before this tool "
+                                    "reported completion.",
+                                },
+                            }
+                        ],
+                    },
+                }
+            )
+        return updates + synthesized, synthesized

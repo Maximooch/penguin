@@ -64,7 +64,9 @@ def test_status_tool_registry_permissions_and_non_consuming_dispatch(
     assert "process_status" in {tool["name"] for tool in manager._define_tool_schemas()}
     context = {"session_id": "session", "agent_id": "parent"}
     try:
-        result = manager.execute_tool("process_start", {"command": "read go"}, context)
+        result = manager.execute_tool(
+            "process_start", {"command": "read go", "stdin": True}, context
+        )
         status = manager.execute_tool(
             "process_status", {"process_id": result["process_id"]}, context
         )
@@ -90,7 +92,9 @@ def test_process_survives_turn_loops_and_status_preserves_output(tmp_path, monke
     owner = {"session_id": "session", "agent_id": "parent"}
     try:
         started = service.execute(
-            "process_start", {"command": "read go; printf done; exit 7"}, owner
+            "process_start",
+            {"command": "read go; printf done; exit 7", "stdin": True},
+            owner,
         )
         pid = started["process_id"]
         state = LoopState()

@@ -22,7 +22,6 @@ from penguin.config import (
 from .git_integration import GitIntegration
 from .manager import ProjectManager
 from .models import Task, TaskStatus
-from .resilience import resilient_operation, RetryStrategy, CircuitBreaker, safe_operation
 
 logger = logging.getLogger(__name__)
 
@@ -166,26 +165,45 @@ class GitManager:
         if not changed_files:
             return {"status": "no_changes", "message": "No file changes to create a PR."}
 
-        # 1. Create a new branch
+        # 1. Create a new branch, remembering where we started
+        base_branch = await loop.run_in_executor(
+            None, self.git_integration.get_current_branch
+        )
         branch_created = await loop.run_in_executor(None, self.git_integration.create_branch, branch_name)
         if not branch_created:
             return {"status": "error", "message": f"Failed to create branch {branch_name}."}
+
+        result = await self._commit_push_and_open_pr(
+            task, validation_results, branch_name
+        )
+        if result.get("status") == "error" and base_branch not in {"unknown", "DETACHED"}:
+            # Return to the starting branch so the next task does not build
+            # on a branch whose PR was never opened. Committed work stays on
+            # the feature branch.
+            await loop.run_in_executor(
+                None, self.git_integration.checkout, base_branch
+            )
+        return result
+
+    async def _commit_push_and_open_pr(
+        self, task: Task, validation_results: Dict[str, Any], branch_name: str
+    ) -> Dict[str, Any]:
+        """Commit, push and open the PR on the feature branch already checked out."""
+        loop = asyncio.get_event_loop()
 
         # 2. Commit the changes
         commit_message = self._create_commit_message(task, validation_results)
         commit_hash = await loop.run_in_executor(None, self.git_integration.commit, commit_message)
         if not commit_hash:
             return {"status": "error", "message": "Failed to commit changes."}
-            
+
         # 3. Push the branch
         pushed = await loop.run_in_executor(None, self.git_integration.push_branch, branch_name)
         if not pushed:
             return {"status": "error", "message": f"Failed to push branch {branch_name}."}
-            
+
         # 4. Create the Pull Request using the GitHub API (with idempotency check)
-        pr_result = await self._create_pr_with_api(task, branch_name, validation_results)
-            
-        return pr_result
+        return await self._create_pr_with_api(task, branch_name, validation_results)
 
     def _create_branch_name(self, task: Task) -> str:
         """Creates a sanitized, unique branch name for a task."""

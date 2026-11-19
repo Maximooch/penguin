@@ -140,7 +140,13 @@ class EventManager:
             else ""
         )
         if msg_key in self.cli.processed_messages:
-            return
+            # The key is only the first 50 characters, so it is a duplicate
+            # only within the turn that recorded it. A reply in a later turn
+            # that opens the same way is a new message. User messages keep the
+            # session-wide check: they are what advances the turn.
+            seen_turn = self.cli.message_turn_map.get(msg_key)
+            if role == "user" or seen_turn == self.cli.current_conversation_turn:
+                return
 
         # If this is a user message, it's start of a new conversation turn
         if role == "user":
@@ -207,14 +213,12 @@ class EventManager:
 
         # First chunk of a new streaming message -> start StreamingDisplay
         if self.cli.streaming_manager._active_stream_id is None:
+            # Stop all active progress displays before this stream takes over.
+            self.cli.streaming_manager.safely_stop_progress()
+            self.cli.streaming_manager.reset_stream_state()
             self.cli.streaming_manager._active_stream_id = stream_id
             self.cli._streaming_started = True
             self.cli.streaming_manager.set_streaming(True)
-            self.cli.streaming_manager.streaming_buffer = ""
-            self.cli.streaming_manager.streaming_reasoning_buffer = ""
-
-            # CRITICAL: Stop ALL active progress displays FIRST
-            self.cli.streaming_manager.safely_stop_progress()
 
             # Stop the "Thinking..." indicator from chat_loop
             if hasattr(self.cli, "_thinking_progress"):
@@ -272,9 +276,6 @@ class EventManager:
                     self.cli.display_manager.display_message(msg_content, msg_role)
                 self.cli.pending_system_messages.clear()
 
-            # Clear stream ID
-            self.cli.streaming_manager._active_stream_id = None
-
             # Store completed message for deduplication
             if self.cli.streaming_manager.streaming_buffer.strip():
                 completed_msg_key = (
@@ -285,9 +286,7 @@ class EventManager:
                     self.cli.current_conversation_turn
                 )
 
-            # Reset buffers
-            self.cli.streaming_manager.streaming_buffer = ""
-            self.cli.streaming_manager.streaming_reasoning_buffer = ""
+            self.cli.streaming_manager.reset_stream_state()
             return
 
     def handle_session_management(self, command: str, args: List[str]) -> None:

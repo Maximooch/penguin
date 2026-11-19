@@ -32,6 +32,7 @@ class IsolatedACPAgent:
         self.catalog, self.factory, self.limit = catalog, factory, limit
         self.roots: dict[str, Runtime] = {}
         self._allocation = asyncio.Lock()
+        self._release_tasks: set[asyncio.Task] = set()
         self._connection = None
         self._transport = None
         self._initialization = None
@@ -86,6 +87,9 @@ class IsolatedACPAgent:
             )
         runtime = await self.factory()
         try:
+            runtime.agent.on_root_resolved = (
+                lambda root, runtime=runtime: self._schedule_release(root, runtime)
+            )
             runtime.agent._transport = self._transport
             runtime.agent.on_connect(self._connection)
             with runtime.services.activate():
@@ -181,11 +185,7 @@ class IsolatedACPAgent:
         async with self._allocation:
             runtime = self._runtime(session_id)
             response = await self._call("close_session", session_id, **kwargs)
-            unresolved = any(
-                sid == session_id and not state.get("completed")
-                for (sid, _), state in runtime.agent._processes.states.items()
-            )
-            if not unresolved:
+            if not runtime.agent._processes.unresolved(session_id):
                 self.roots.pop(session_id, None)
                 await self._dispose(runtime)
             return response
@@ -225,6 +225,26 @@ class IsolatedACPAgent:
         runtime = self._runtime(sid)
         with runtime.services.activate():
             return await runtime.agent._send_commands(sid)
+
+    def _schedule_release(self, root: str, runtime: Runtime) -> None:
+        """Release a closed root's runtime once its background work ended."""
+        task = asyncio.get_running_loop().create_task(
+            self._release_if_idle(root, runtime)
+        )
+        self._release_tasks.add(task)
+        task.add_done_callback(self._release_tasks.discard)
+
+    async def _release_if_idle(self, root: str, runtime: Runtime) -> None:
+        async with self._allocation:
+            if (
+                self._closed
+                or self.roots.get(root) is not runtime
+                or root in runtime.agent.sessions
+                or runtime.agent._processes.unresolved(root)
+            ):
+                return
+            self.roots.pop(root, None)
+            await self._dispose(runtime)
 
     async def _dispose(self, runtime):
         with runtime.services.activate():

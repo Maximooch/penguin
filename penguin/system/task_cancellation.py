@@ -94,6 +94,7 @@ class AbortReason(str, Enum):
     """Known runtime reasons for deliberately interrupting a task."""
 
     USER_INTERRUPTED = "user_interrupted"
+    SERVER_SHUTDOWN = "server_shutdown"
 
 
 _reasons: WeakKeyDictionary[asyncio.Task, AbortReason] = WeakKeyDictionary()

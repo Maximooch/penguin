@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional, Union, cast
 
+from penguin.security.tool_capabilities import is_capability_denial
 from penguin.system.execution_context import get_current_execution_context
 from penguin.utils.parser import CodeActAction, parse_action
 
@@ -1619,7 +1620,9 @@ async def execute_tool_calls_serially(
             tool_result = ToolResult(
                 call_id=tool_call.id,
                 name=tool_call.name,
-                status="completed",
+                # A capability denial arrives as text. Recorded as completed,
+                # a denied finish_task / finish_response would end the loop.
+                status="error" if is_capability_denial(output) else "completed",
                 output=str(output if output is not None else ""),
                 structured_output={"tool_arguments": tool_call.arguments},
                 started_at=started_at,

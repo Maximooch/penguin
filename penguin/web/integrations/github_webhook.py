@@ -283,6 +283,14 @@ def extract_mention_command(text: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def _is_bot_account(user: Any) -> bool:
+    """Return whether a GitHub user object describes a bot or app account."""
+    if not isinstance(user, dict):
+        return False
+    login = str(user.get("login") or "")
+    return str(user.get("type") or "").lower() == "bot" or login.endswith("[bot]")
+
+
 async def handle_issue_comment(payload: Dict[str, Any], core: Any) -> None:
     """Handle issue_comment webhook event.
 
@@ -302,6 +310,11 @@ async def handle_issue_comment(payload: Dict[str, Any], core: Any) -> None:
 
     comment_body = comment.get("body", "")
     comment_user = comment.get("user", {}).get("login", "unknown")
+    if _is_bot_account(comment.get("user")) or _is_bot_account(payload.get("sender")):
+        # Penguin's own replies quote example "@Penguin ..." commands. Answering
+        # bot-authored comments would let it trigger itself.
+        logger.debug("Ignoring bot-authored comment from %s", comment_user)
+        return
     issue_number = issue.get("number")
     is_pr = "pull_request" in issue
     repo_name = repository.get("full_name")

@@ -95,7 +95,7 @@ async def test_cancel_rejects_waiting_form_and_late_answer(tmp_path):
         assert manager.get_request(request.id).status.value == "rejected"
         assert manager.reply(request.id, [["blue"]]) is None
         assert not manager.list_pending(sid)
-        assert not agent._questions.tasks[sid]
+        assert not agent._questions.tasks.get(sid)
     finally:
         agent.close()
 

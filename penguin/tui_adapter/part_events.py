@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 from penguin.system.runtime_events import wrap_opencode_event
+from penguin.tui_adapter.action_tag_filter import ActionTagFilter
 
 
 class PartType(Enum):
@@ -109,16 +110,18 @@ class PartEventAdapter:
         self._default_directory: Optional[str] = None
         self._last_id_ts = 0
         self._last_id_inc = 0
-        self._action_active: Optional[str] = None
-        self._action_buffer = ""
         try:
             from penguin.utils.parser import ActionType
 
-            self._action_tags = [
-                action_type.value.lower() for action_type in ActionType
-            ]
+            action_tags = [action_type.value.lower() for action_type in ActionType]
         except Exception:
-            self._action_tags = []
+            action_tags = []
+        # One filter per channel, so a tag opened in reasoning cannot hide the
+        # answer, or the other way round.
+        self._tag_filters = {
+            "assistant": ActionTagFilter(action_tags),
+            "reasoning": ActionTagFilter(action_tags),
+        }
         self._filter_re = re.compile(r"</?finish_response\b[^>]*>?", re.IGNORECASE)
 
     def set_session(self, session_id: str):
@@ -178,96 +181,14 @@ class PartEventAdapter:
         )
         return f"{prefix}_{session_fragment}_{stamp}_{self._last_id_inc:02d}"
 
-    def _strip_action_tags_keep_whitespace(self, text: str) -> str:
-        if not text:
-            return text
+    def _reset_tag_filters(self) -> None:
+        for tag_filter in self._tag_filters.values():
+            tag_filter.reset()
 
-        if not self._action_tags:
-            return text
-
-        combined = f"{self._action_buffer}{text}"
-        self._action_buffer = ""
-        lowered = combined.lower()
-        output: list[str] = []
-        index = 0
-
-        def _is_literal_tag(open_index: int, end_index: Optional[int] = None) -> bool:
-            """Return True when a tag-looking token is escaped/literal markdown text."""
-            if open_index > 0:
-                prev_char = combined[open_index - 1]
-                if prev_char in {"`", "\\"}:
-                    return True
-            if end_index is not None and end_index + 1 < len(combined):
-                next_char = combined[end_index + 1]
-                if next_char == "`":
-                    return True
-            return False
-
-        while index < len(combined):
-            if self._action_active:
-                close_token = f"</{self._action_active}>"
-                close_index = lowered.find(close_token, index)
-                if close_index == -1:
-                    tail_len = max(len(close_token) - 1, 0)
-                    if tail_len:
-                        self._action_buffer = combined[-tail_len:]
-                    return "".join(output)
-                index = close_index + len(close_token)
-                self._action_active = None
-                continue
-
-            open_index = combined.find("<", index)
-            if open_index == -1:
-                output.append(combined[index:])
-                return "".join(output)
-
-            output.append(combined[index:open_index])
-            end_index = combined.find(">", open_index + 1)
-            if end_index == -1:
-                if _is_literal_tag(open_index):
-                    output.append(combined[open_index:])
-                    return "".join(output)
-                fragment = lowered[open_index + 1 :]
-                if fragment.startswith("/"):
-                    fragment = fragment[1:]
-                if any(tag.startswith(fragment) for tag in self._action_tags):
-                    self._action_buffer = combined[open_index:]
-                    return "".join(output)
-                output.append(combined[open_index:])
-                return "".join(output)
-
-            tag_token = lowered[open_index + 1 : end_index].strip()
-            is_close = tag_token.startswith("/")
-            tag_name = tag_token[1:].strip() if is_close else tag_token
-            if tag_name not in self._action_tags:
-                output.append(combined[open_index : end_index + 1])
-                index = end_index + 1
-                continue
-
-            if _is_literal_tag(open_index, end_index):
-                output.append(combined[open_index : end_index + 1])
-                index = end_index + 1
-                continue
-
-            if is_close:
-                index = end_index + 1
-                continue
-
-            close_token = f"</{tag_name}>"
-            close_index = lowered.find(close_token, end_index + 1)
-            if close_index == -1:
-                self._action_active = tag_name
-                tail_len = max(len(close_token) - 1, 0)
-                if tail_len:
-                    self._action_buffer = combined[-tail_len:]
-                return "".join(output)
-
-            index = close_index + len(close_token)
-
-        return "".join(output)
-
-    def _strip_internal(self, text: str, trim: bool = True) -> str:
-        cleaned = self._strip_action_tags_keep_whitespace(text)
+    def _strip_internal(
+        self, text: str, trim: bool = True, channel: str = "assistant"
+    ) -> str:
+        cleaned = self._tag_filters[channel].feed(text)
         cleaned = self._filter_re.sub("", cleaned)
         return cleaned.strip() if trim else cleaned
 
@@ -366,8 +287,7 @@ class PartEventAdapter:
         Returns:
             Tuple of (message_id, part_id)
         """
-        self._action_active = None
-        self._action_buffer = ""
+        self._reset_tag_filters()
 
         message: Optional[Message] = None
         reuse_message_id = self._current_message_id
@@ -457,7 +377,11 @@ class PartEventAdapter:
         if not part:
             return
 
-        chunk = self._strip_internal(chunk, trim=False)
+        chunk = self._strip_internal(
+            chunk,
+            trim=False,
+            channel="reasoning" if message_type == "reasoning" else "assistant",
+        )
         # Handle reasoning content separately
         if message_type == "reasoning":
             if not self._current_reasoning_part_id:
@@ -490,6 +414,23 @@ class PartEventAdapter:
 
     async def on_stream_end(self, message_id: str, part_id: str):
         """Called when streaming ends - finalize message and part."""
+        # Text held back after a tag that never closed is shown, not lost.
+        for channel, held_part_id in (
+            ("assistant", self._current_text_part_id or part_id),
+            ("reasoning", self._current_reasoning_part_id),
+        ):
+            held = self._filter_re.sub("", self._tag_filters[channel].flush())
+            held_part = self._active_parts.get(held_part_id) if held_part_id else None
+            if held and held_part is not None:
+                held_part.content["text"] = (
+                    f"{held_part.content.get('text', '')}{held}"
+                )
+                held_part.delta = held
+                await self._emit(
+                    "message.part.updated",
+                    {"part": self._part_to_dict(held_part), "delta": held},
+                )
+                held_part.delta = None
         message = self._active_messages.get(message_id)
 
         if message:
@@ -507,8 +448,7 @@ class PartEventAdapter:
         self._current_message_id = message_id
         self._current_reasoning_part_id = None
         self._current_text_part_id = None
-        self._action_active = None
-        self._action_buffer = ""
+        self._reset_tag_filters()
         await self._sync_session_status()
 
     async def on_assistant_error(
@@ -738,8 +678,7 @@ class PartEventAdapter:
             )
             changed = True
 
-        self._action_active = None
-        self._action_buffer = ""
+        self._reset_tag_filters()
         await self._sync_session_status()
         return changed
 
@@ -765,8 +704,7 @@ class PartEventAdapter:
         self._current_message_id = None
         self._current_text_part_id = None
         self._current_reasoning_part_id = None
-        self._action_active = None
-        self._action_buffer = ""
+        self._reset_tag_filters()
 
         resolved_message_id = message_id or self._next_id("msg")
 

@@ -609,29 +609,21 @@ class LiteLLMGateway:
 
         except asyncio.CancelledError:
             logger.warning(f"[Request:{request_id}] LiteLLM streaming was cancelled.")
+            raise
         except Exception as e:
+            # The caller records the failure. Returning the text gathered so
+            # far would present a failed request as a short answer.
             logger.error(
                 f"[Request:{request_id}] Error during LiteLLM streaming: {e}",
                 exc_info=True,
             )
-            try:
-                if stream_callback:
-                    stream_callback(f"\n[STREAMING ERROR: {str(e)}]")
-            except Exception as cb_err:
-                logger.error(
-                    f"[Request:{request_id}] Error calling stream_callback with error message: {cb_err}"
-                )
-            error_msg = f"[STREAMING ERROR: {str(e)}]"
-            if accumulated_response:
-                return "".join(accumulated_response) + "\n" + error_msg
-            else:
-                return error_msg
-        finally:
-            final_response = "".join(accumulated_response)
-            logger.debug(
-                f"[Request:{request_id}] Streaming finished. Accumulated response length: {len(final_response)}"
-            )
-            return final_response
+            raise
+
+        final_response = "".join(accumulated_response)
+        logger.debug(
+            f"[Request:{request_id}] Streaming finished. Accumulated response length: {len(final_response)}"
+        )
+        return final_response
 
     def count_tokens(self, content: Union[str, List[Dict[str, Any]]]) -> int:
         """

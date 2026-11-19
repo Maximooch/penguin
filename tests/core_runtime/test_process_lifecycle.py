@@ -8,6 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from penguin.core_runtime import process_lifecycle
+from penguin.core_runtime.process_lifecycle import SessionRun
+
+
+def _runs(owner: object) -> dict[str, SessionRun]:
+    return getattr(owner, "_opencode_session_runs", {})
 
 
 class _Owner:
@@ -72,9 +77,7 @@ async def test_register_initializes_state_tracks_task_and_emits_busy() -> None:
         )
 
         assert tracked is True
-        assert owner._opencode_abort_sessions == set()
-        assert owner._opencode_process_tasks == {"session_1": {task}}
-        assert owner._opencode_active_requests == {"session_1": 1}
+        assert _runs(owner) == {"session_1": SessionRun(tasks={task}, requests=1)}
         assert owner.status_events == [("session_1", "busy")]
         assert owner.heartbeat_events == [("ensure", "session_1")]
     finally:
@@ -105,8 +108,9 @@ async def test_register_second_request_does_not_emit_duplicate_busy() -> None:
             is True
         )
 
-        assert owner._opencode_process_tasks == {"session_1": {first, second}}
-        assert owner._opencode_active_requests == {"session_1": 2}
+        assert _runs(owner) == {
+            "session_1": SessionRun(tasks={first, second}, requests=2)
+        }
         assert owner.status_events == [("session_1", "busy")]
         assert owner.heartbeat_events == [("ensure", "session_1")]
     finally:
@@ -142,8 +146,7 @@ async def test_cancelled_busy_status_emission_rolls_back_request_accounting() ->
                 timeout=0.01,
             )
 
-        assert owner._opencode_process_tasks == {}
-        assert owner._opencode_active_requests == {}
+        assert _runs(owner) == {}
     finally:
         registration.cancel()
         task.cancel()
@@ -185,8 +188,7 @@ async def test_cancelled_first_registration_preserves_concurrent_second_request(
         with pytest.raises(asyncio.CancelledError):
             await registration
 
-        assert owner._opencode_process_tasks == {"session_1": {second}}
-        assert owner._opencode_active_requests == {"session_1": 1}
+        assert _runs(owner) == {"session_1": SessionRun(tasks={second}, requests=1)}
         assert owner.heartbeat_events == [("ensure", "session_1")]
     finally:
         registration.cancel()
@@ -211,7 +213,7 @@ async def test_finalize_only_emits_idle_after_last_active_request() -> None:
             "session_1",
             second,
         )
-        owner._opencode_abort_sessions.add("session_1")
+        process_lifecycle.mark_session_aborted(owner, "session_1")
 
         await process_lifecycle.finalize_opencode_process_request(
             owner,
@@ -220,9 +222,9 @@ async def test_finalize_only_emits_idle_after_last_active_request() -> None:
             request_tracked=True,
         )
 
-        assert owner._opencode_process_tasks == {"session_1": {second}}
-        assert owner._opencode_active_requests == {"session_1": 1}
-        assert owner._opencode_abort_sessions == {"session_1"}
+        assert _runs(owner) == {
+            "session_1": SessionRun(tasks={second}, requests=1, abort_requested=True)
+        }
         assert owner.status_events == [("session_1", "busy")]
         assert owner.heartbeat_events == [("ensure", "session_1")]
 
@@ -233,9 +235,7 @@ async def test_finalize_only_emits_idle_after_last_active_request() -> None:
             request_tracked=True,
         )
 
-        assert owner._opencode_process_tasks == {}
-        assert owner._opencode_active_requests == {}
-        assert owner._opencode_abort_sessions == set()
+        assert _runs(owner) == {}
         assert owner.status_events == [
             ("session_1", "busy"),
             ("session_1", "idle"),
@@ -280,8 +280,7 @@ async def test_finalize_does_not_wedge_on_hung_idle_status(
             request_tracked=True,
         )
 
-        assert owner._opencode_process_tasks == {}
-        assert owner._opencode_active_requests == {}
+        assert _runs(owner) == {}
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -310,8 +309,7 @@ async def test_blank_session_or_missing_task_does_not_track_request() -> None:
         request_tracked=False,
     )
 
-    assert owner._opencode_process_tasks == {}
-    assert owner._opencode_active_requests == {}
+    assert _runs(owner) == {}
     assert owner.status_events == []
     assert owner.heartbeat_events == []
 
@@ -322,40 +320,33 @@ def test_request_gate_uses_a_non_colliding_fallback_key() -> None:
     owner = _Owner()
 
     fallback_gate = process_lifecycle.get_session_request_gate(owner, None)
-    assert (
-        process_lifecycle.get_session_request_gate(owner, "   ") is fallback_gate
-    )
+    assert process_lifecycle.get_session_request_gate(owner, "   ") is fallback_gate
 
     named_gate = process_lifecycle.get_session_request_gate(owner, "__default__")
     assert named_gate is not fallback_gate
 
 
-def test_discard_abort_session_ignores_blank_session_and_repairs_state() -> None:
-    owner = SimpleNamespace(
-        _opencode_abort_sessions=["bad"],
-        _opencode_process_tasks=["bad"],
-        _opencode_active_requests=["bad"],
-    )
+def test_discard_abort_session_ignores_blank_and_unknown_sessions() -> None:
+    owner = SimpleNamespace()
 
     process_lifecycle.discard_opencode_abort_session(owner, "")
-    assert owner._opencode_abort_sessions == ["bad"]
-
     process_lifecycle.discard_opencode_abort_session(owner, "session_1")
-    assert owner._opencode_abort_sessions == set()
-    assert owner._opencode_process_tasks == {}
-    assert owner._opencode_active_requests == {}
+    assert _runs(owner) == {}
+
+    process_lifecycle.mark_session_aborted(owner, "session_1")
+    assert _runs(owner) == {"session_1": SessionRun(abort_requested=True)}
+    process_lifecycle.discard_opencode_abort_session(owner, "session_1")
+    assert _runs(owner) == {}
 
 
 def test_handle_process_cancelled_clears_abort_marker_and_returns_payload() -> None:
     owner = SimpleNamespace(
-        _opencode_abort_sessions={"session_1"},
-        _opencode_process_tasks={},
-        _opencode_active_requests={},
+        _opencode_session_runs={"session_1": SessionRun(abort_requested=True)}
     )
 
     payload = process_lifecycle.handle_process_cancelled(owner, "session_1")
 
-    assert owner._opencode_abort_sessions == set()
+    assert _runs(owner) == {}
     assert payload == {
         "assistant_response": "",
         "action_results": [],

@@ -16,7 +16,9 @@ from penguin.system.task_cancellation import AbortReason, abort_task
 from . import (
     opencode_bridge as core_opencode_bridge,
     opencode_transcript as core_opencode_transcript,
+    process_lifecycle,
 )
+from .runmode_lifecycle import in_runmode_run
 
 __all__ = [
     "abort_session",
@@ -254,13 +256,7 @@ async def opencode_session_status_heartbeat(
     try:
         while True:
             await asyncio.sleep(interval)
-            active_requests = getattr(owner, "_opencode_active_requests", None)
-            active_count = (
-                active_requests.get(session_id, 0)
-                if isinstance(active_requests, dict)
-                else 0
-            )
-            if active_count <= 0:
+            if not process_lifecycle.session_has_active_request(owner, session_id):
                 return
             try:
                 await owner._emit_opencode_session_status(session_id, "busy")
@@ -426,24 +422,17 @@ async def abort_session(
     if not sid:
         return False
 
-    abort_sessions = getattr(owner, "_opencode_abort_sessions", None)
-    if not isinstance(abort_sessions, set):
-        abort_sessions = set()
-        owner._opencode_abort_sessions = abort_sessions
-    abort_sessions.add(sid)
+    process_lifecycle.mark_session_aborted(owner, sid)
     aborted = False
 
     adapter = owner._get_tui_adapter(sid)
     adapter_abort = getattr(adapter, "abort", None)
 
-    tasks_map = getattr(owner, "_opencode_process_tasks", None)
-    if isinstance(tasks_map, dict):
-        active_tasks = list(tasks_map.get(sid, set()))
-        for task in active_tasks:
-            if task.done():
-                continue
-            abort_task(task, AbortReason.USER_INTERRUPTED)
-            aborted = True
+    for task in process_lifecycle.session_tasks(owner, sid):
+        if task.done():
+            continue
+        abort_task(task, AbortReason.USER_INTERRUPTED)
+        aborted = True
 
     states = getattr(owner, "_opencode_stream_states", None)
     state = states.get(sid) if isinstance(states, dict) else None
@@ -460,6 +449,9 @@ async def abort_session(
                 aborted = True
             except Exception:
                 logger.warning("Failed to force-finalize aborted stream", exc_info=True)
+            message_adapters = getattr(owner, "_opencode_message_adapters", None)
+            if isinstance(message_adapters, dict):
+                message_adapters.pop(message_id, None)
         state["active"] = False
         state["stream_id"] = None
         state["part_id"] = None
@@ -814,7 +806,8 @@ def finalize_streaming_message(
             )
 
         temp_ws_callback = getattr(owner, "_temp_ws_callback", None)
-        if temp_ws_callback:
+        # Only the RunMode run's own messages go to its socket.
+        if temp_ws_callback and in_runmode_run(owner):
             _schedule_background_task(
                 owner,
                 temp_ws_callback(
@@ -1028,12 +1021,7 @@ async def handle_stream_chunk(
             or resolved_session_id
         )
 
-    abort_sessions = getattr(owner, "_opencode_abort_sessions", None)
-    if not isinstance(abort_sessions, set):
-        abort_sessions = set()
-        owner._opencode_abort_sessions = abort_sessions
-
-    if isinstance(resolved_session_id, str) and resolved_session_id in abort_sessions:
+    if process_lifecycle.consume_session_abort(owner, resolved_session_id):
         raise asyncio.CancelledError(f"Session {resolved_session_id} aborted")
 
     filter_event = getattr(owner, "_filter_internal_markers_from_event")
@@ -1292,9 +1280,11 @@ async def handle_tui_stream_chunk(
                 await adapter.on_stream_end(message_id, part_id)
             except Exception:
                 pass
+            owner._opencode_message_adapters.pop(message_id, None)
 
-        state["active"] = True
-        state["stream_id"] = stream_id
+        # Nothing is active until the new message exists; the previous
+        # message id stays as the session's latest message meanwhile.
+        state.update(active=False, stream_id=None, part_id=None)
         model_state = owner._resolve_opencode_model_state(session_id=session_id)
 
         try:
@@ -1304,13 +1294,13 @@ async def handle_tui_stream_chunk(
                 provider_id=model_state.get("providerID"),
                 variant=model_state.get("variant"),
             )
-            state["message_id"] = message_id
-            state["part_id"] = part_id
-            owner._opencode_message_adapters[message_id] = adapter
         except Exception as exc:
             logger.error("Failed to start OpenCode stream: %s", exc)
-            state["active"] = False
             return
+        state.update(
+            active=True, stream_id=stream_id, message_id=message_id, part_id=part_id
+        )
+        owner._opencode_message_adapters[message_id] = adapter
 
     message_id = state.get("message_id")
     part_id = state.get("part_id")
@@ -1343,6 +1333,7 @@ async def handle_tui_stream_chunk(
                 await adapter.on_stream_end(message_id, part_id)
             except Exception as exc:
                 logger.error("Failed to finalize OpenCode stream: %s", exc)
+            owner._opencode_message_adapters.pop(message_id, None)
         state["active"] = False
         state["stream_id"] = None
         state["message_id"] = message_id

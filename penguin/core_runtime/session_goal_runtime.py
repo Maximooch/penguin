@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
+import socket
 import time
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -181,10 +183,46 @@ def _directories_match(left: str, right: str) -> bool:
         return False
 
 
+def goal_run_owner_id(pid: int | None = None) -> str:
+    """Return a new goal-run owner id naming this host and a process id."""
+
+    return f"goalowner_{uuid4().hex}@{socket.gethostname()}:{pid or os.getpid()}"
+
+
+def _live_owner_pid_elsewhere(owner: Any) -> int | None:
+    """Return the pid of another live process on this host that owns a claim.
+
+    A claim names its host and pid. One from another host, an older id without
+    them, or one whose process has exited is not live here and may be
+    recovered. A pid reused by an unrelated process reads as live; the run is
+    then refused rather than run twice.
+    """
+
+    if not isinstance(owner, str) or "@" not in owner:
+        return None
+    host, _, pid_text = owner.rpartition("@")[2].rpartition(":")
+    if host != socket.gethostname() or not pid_text.isdigit():
+        return None
+    pid = int(pid_text)
+    if pid == os.getpid():
+        return None
+    if os.name == "nt":
+        import psutil
+
+        return pid if psutil.pid_exists(pid) else None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return pid
+    return pid
+
+
 def _runtime_owner_id(core: Any) -> str:
     owner_id = getattr(core, "_goal_runtime_owner_id", None)
     if not isinstance(owner_id, str) or not owner_id:
-        owner_id = f"goalowner_{uuid4().hex}"
+        owner_id = goal_run_owner_id()
         core._goal_runtime_owner_id = owner_id
     return owner_id
 
@@ -820,6 +858,11 @@ async def run_session_goal(
                 and live_runs.get(session_id) == active_run_id
             ):
                 raise GoalRunConflictError("Goal is already running")
+            live_pid = _live_owner_pid_elsewhere(current.get("active_run_owner"))
+            if live_pid is not None:
+                raise GoalRunConflictError(
+                    f"Goal is running in another Penguin process (pid {live_pid})"
+                )
             recovered = deepcopy(current)
             recovered["status"] = "paused"
             recovered["active_run_id"] = None
@@ -844,11 +887,7 @@ async def run_session_goal(
         elif current["status"] != "active":
             raise GoalRunStateError(f"Goal status {current['status']} is not runnable")
         else:
-            active_requests = getattr(core, "_opencode_active_requests", {})
-            if (
-                isinstance(active_requests, dict)
-                and active_requests.get(session_id, 0) > 0
-            ):
+            if process_lifecycle.session_has_active_request(core, session_id):
                 raise GoalRunConflictError("Session already has active work")
             request_gate = process_lifecycle.get_session_request_gate(
                 core,
@@ -873,6 +912,23 @@ async def run_session_goal(
                     raise GoalRunConflictError("Goal changed before budget update")
                 await _emit_goal_events_bounded(core, session_id, limited)
             else:
+                # Take the gate before recording the claim, in this task: an
+                # unlocked gate is taken without waiting, so no request can
+                # reserve the session between the check above and the claim,
+                # and a recorded claim always holds the gate.
+                remaining = (
+                    None
+                    if resolved_timeout is None
+                    else max(0.0, resolved_timeout - (time.monotonic() - started))
+                )
+                try:
+                    async with asyncio.timeout(remaining):
+                        await request_gate.acquire()
+                except TimeoutError as exc:
+                    raise GoalRunConflictError(
+                        "Session request gate is already reserved"
+                    ) from exc
+                gate_acquired = True
                 run_id = f"goalrun_{uuid4().hex}"
                 claimed = deepcopy(current)
                 claimed_revision = current["revision"] + 1
@@ -889,15 +945,11 @@ async def run_session_goal(
                     expected_goal_id=current["id"],
                     expected_revision=current["revision"],
                 ):
+                    request_gate.release()
+                    gate_acquired = False
                     raise GoalRunConflictError("Goal changed before execution started")
                 live_runs[session_id] = run_id
                 try:
-                    await _await_with_run_deadline(
-                        request_gate.acquire(),
-                        started=started,
-                        timeout_seconds=resolved_timeout,
-                    )
-                    gate_acquired = True
                     tracked = await _await_with_run_deadline(
                         process_lifecycle.register_opencode_process_request(
                             core,

@@ -54,7 +54,10 @@ def test_context_window_trim_preserves_llm_request_lifecycle_records() -> None:
 
 def test_context_window_trim_preserves_non_primary_categories() -> None:
     cwm = ContextWindowManager(token_counter=lambda content: len(str(content)))
-    cwm.max_context_window_tokens = 1
+    # The session fits the window, so trimming must keep every category when
+    # it rebuilds the message list. (A session over the window is trimmed,
+    # lowest priority first: see test_context_window_total_budget.py.)
+    cwm.max_context_window_tokens = 100
 
     session = Session()
     error_message = Message(

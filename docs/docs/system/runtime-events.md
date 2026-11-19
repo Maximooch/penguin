@@ -71,7 +71,7 @@ Environment overrides:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PENGUIN_RUNTIME_EVENT_LEDGER_PATH` | workspace runtime-events DB | Override SQLite path |
-| `PENGUIN_RUNTIME_EVENT_LEDGER_MAX_EVENTS` | `100000` | Maximum retained rows |
+| `PENGUIN_RUNTIME_EVENT_LEDGER_MAX_EVENTS` | `100000` | Maximum retained rows; `0` or `off` means no count limit |
 | `PENGUIN_RUNTIME_EVENT_LEDGER_MAX_AGE_DAYS` | `14` | Age-based retention window |
 | `PENGUIN_RUNTIME_EVENT_LEDGER_MAX_BYTES` | `268435456` | Soft DB/WAL size limit |
 | `PENGUIN_RUNTIME_EVENT_LEDGER_CLEANUP_INTERVAL_SECONDS` | `60` | Minimum cleanup interval |

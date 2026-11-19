@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from tenacity import (
     AsyncRetrying,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -39,6 +39,16 @@ def _process_retry_error_callback(retry_state: Any) -> Any:
     return exception
 
 
+# Set on an exception that escapes ``process`` after the turn started: the
+# user message is saved and tools may have run, so running it again would
+# repeat both.
+_TURN_STARTED_ATTR = "_penguin_turn_started"
+
+
+def _turn_not_started(exc: BaseException) -> bool:
+    return isinstance(exc, Exception) and not getattr(exc, _TURN_STARTED_ATTR, False)
+
+
 def _process_retrying(
     *,
     sleep: Callable[[float], Awaitable[None]] | None = None,
@@ -48,7 +58,7 @@ def _process_retrying(
         "stop": stop_after_attempt(3),
         "wait": wait_exponential(multiplier=1, min=4, max=10),
         "reraise": True,
-        "retry": retry_if_exception_type(Exception),
+        "retry": retry_if_exception(_turn_not_started),
         "retry_error_callback": _process_retry_error_callback,
     }
     if sleep is not None:
@@ -77,24 +87,30 @@ async def process_with_retry(
 ) -> dict[str, Any] | BaseException:
     """Process a user request with the public retry policy applied."""
     retrying = _process_retrying(sleep=retry_sleep)
-    return await retrying(
-        process,
-        owner,
-        input_data=input_data,
-        context=context,
-        conversation_id=conversation_id,
-        agent_id=agent_id,
-        max_iterations=max_iterations,
-        context_files=context_files,
-        streaming=streaming,
-        stream_callback=stream_callback,
-        multi_step=multi_step,
-        api_client_override=api_client_override,
-        model_config_override=model_config_override,
-        log=log,
-        trace_log_info=trace_log_info,
-        log_error_fn=log_error_fn,
-    )
+    try:
+        return await retrying(
+            process,
+            owner,
+            input_data=input_data,
+            context=context,
+            conversation_id=conversation_id,
+            agent_id=agent_id,
+            max_iterations=max_iterations,
+            context_files=context_files,
+            streaming=streaming,
+            stream_callback=stream_callback,
+            multi_step=multi_step,
+            api_client_override=api_client_override,
+            model_config_override=model_config_override,
+            log=log,
+            trace_log_info=trace_log_info,
+            log_error_fn=log_error_fn,
+        )
+    except Exception as exc:
+        if getattr(exc, _TURN_STARTED_ATTR, False):
+            # Same shape as retry exhaustion: the caller gets the exception.
+            return exc
+        raise
 
 
 async def process(
@@ -165,6 +181,7 @@ async def process(
         request_task,
     )
 
+    turn_started = False
     try:
         if conversation_id:
             load_result = core_conversations.load_process_conversation(
@@ -197,6 +214,7 @@ async def process(
                 context_file_count,
             )
 
+        turn_started = True
         await core_process_lifecycle.emit_process_user_message(
             owner,
             message,
@@ -293,18 +311,26 @@ async def process(
         )
 
     except Exception as exc:
-        return await core_process_lifecycle.handle_process_error(
-            owner,
-            exc,
-            input_data,
-            log=log,
-            log_error_fn=log_error_fn,
-        )
+        try:
+            return await core_process_lifecycle.handle_process_error(
+                owner,
+                exc,
+                input_data,
+                log=log,
+                log_error_fn=log_error_fn,
+            )
+        except Exception as handler_exc:
+            setattr(handler_exc, _TURN_STARTED_ATTR, turn_started)
+            raise
 
     finally:
-        await core_process_lifecycle.finalize_opencode_process_request(
-            owner,
-            request_session_id,
-            request_task,
-            request_tracked=request_tracked,
-        )
+        try:
+            await core_process_lifecycle.finalize_opencode_process_request(
+                owner,
+                request_session_id,
+                request_task,
+                request_tracked=request_tracked,
+            )
+        except Exception as cleanup_exc:
+            setattr(cleanup_exc, _TURN_STARTED_ATTR, turn_started)
+            raise

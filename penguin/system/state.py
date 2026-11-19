@@ -468,19 +468,22 @@ class PenguinState:
         self.system_states: Dict[str, SystemState] = {}
         self.global_state: SystemState = SystemState.IDLE
         self.state_history: List[SystemState] = []
-        self._previous_state: Optional[SystemState] = None
+        self._previous_states: Dict[str, SystemState] = {}
 
     async def update_system_state(self, system: str, state: SystemState):
         """Update individual system state"""
-        self._previous_state = self.system_states.get(system)
+        previous = self.system_states.get(system)
+        if previous is not None:
+            self._previous_states[system] = previous
         self.system_states[system] = state
         self.state_history.append(state)
         await self._check_global_state()
 
     async def resume_previous_state(self, system: str) -> None:
-        """Resume previous state after interruption"""
-        if self._previous_state:
-            await self.update_system_state(system, self._previous_state)
+        """Resume this system's previous state after interruption"""
+        previous = self._previous_states.get(system)
+        if previous is not None:
+            await self.update_system_state(system, previous)
 
     async def _check_global_state(self):
         """Update global state based on system states"""

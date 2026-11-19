@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
+
+from penguin.utils.errors import RunModeBusyError
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-__all__ = ["start_run_mode"]
+__all__ = ["in_runmode_run", "start_run_mode"]
+
+# Marks the RunMode run's own execution (inherited by tasks it starts), so its
+# event sink receives only that run's output, not other sessions'.
+_RUNMODE_RUN: ContextVar[object | None] = ContextVar("runmode_run", default=None)
+
+
+def in_runmode_run(owner: Any) -> bool:
+    """Return whether the caller runs inside ``owner``'s active RunMode run."""
+    run_id = getattr(owner, "_runmode_run_id", None)
+    return run_id is not None and _RUNMODE_RUN.get() is run_id
 
 
 async def start_run_mode(
@@ -21,17 +34,34 @@ async def start_run_mode(
     mode_type: str = "task",
     stream_callback_for_cli: Callable[[str], Awaitable[None]] | None = None,
     ui_update_callback_for_cli: Callable[[], Awaitable[None]] | None = None,
+    websocket_event_callback: Callable[[dict[str, Any]], Awaitable[None]]
+    | None = None,
     run_mode_factory: Callable[..., Any],
     log_error: Callable[..., None],
     logger: Any,
 ) -> None:
-    """Start and clean up RunMode against a core-like owner."""
+    """Start and clean up RunMode against a core-like owner.
+
+    Raises:
+        RunModeBusyError: Another RunMode is still running on this owner. Its
+            callbacks and state are left untouched.
+    """
+    if getattr(owner, "_runmode_active", False):
+        raise RunModeBusyError(
+            "RunMode is already running; stop it or wait for it to finish"
+        )
     owner._ui_update_callback = ui_update_callback_for_cli
+    # The run's own event sink; set here, after the busy check, and cleared
+    # by this run's cleanup, so another caller can never take it over.
+    owner._temp_ws_callback = websocket_event_callback
     owner._runmode_stream_callback = owner._prepare_runmode_stream_callback(
         stream_callback_for_cli
     )
     owner._runmode_active = True
     owner.current_runmode_status_summary = "Starting RunMode..."
+    run_id = object()
+    owner._runmode_run_id = run_id
+    run_token = _RUNMODE_RUN.set(run_id)
 
     run_mode = None
     try:
@@ -77,10 +107,13 @@ async def start_run_mode(
         raise
 
     finally:
+        _RUNMODE_RUN.reset(run_token)
+        owner._runmode_run_id = None
         owner._runmode_active = False
         owner._runmode_stream_callback = None
         owner.run_mode = None
         owner._ui_update_callback = None
+        owner._temp_ws_callback = None
 
         if run_mode is None:
             owner._continuous_mode = False

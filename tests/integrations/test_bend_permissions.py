@@ -164,16 +164,17 @@ def test_invalid_boundary_rejected(binaries: dict[str, Path], text: str) -> None
         ("disabled_all", "allow", []),
         ("yolo", "allow", []),
         ("allowlist", "allow", []),
-        ("exception_only", "allow", ["error"]),
-        ("exception_then_ask", "ask", ["error", "0"]),
-        ("exception_then_deny", "deny", ["error", "1"]),
+        # A policy that raises denies and stops evaluation (SM-03).
+        ("exception_only", "deny", ["error"]),
+        ("exception_then_ask", "deny", ["error"]),
+        ("exception_then_deny", "deny", ["error"]),
         ("priority", "deny", ["1"]),
     ],
 )
 def test_python_boundary_characterization(
     mode: str, expected: str, visited: list[str]
 ) -> None:
-    """Document behavior excluded from the algebra, not endorse fail-open errors."""
+    """Document behavior excluded from the algebra, including fail-closed errors."""
     enforcer, calls = enforcer_for("qd")
     if mode == "disabled_deny":
         enforcer._policies[1].disable()

@@ -406,6 +406,10 @@ class AgentExecutor:
             await agent_task.task
         except asyncio.CancelledError:
             pass
+        # The agent may have reached its own outcome while the cancel was in
+        # flight; that outcome stands.
+        if agent_task.state in (AgentState.COMPLETED, AgentState.FAILED):
+            return False
         agent_task.state = AgentState.CANCELLED
         return True
 

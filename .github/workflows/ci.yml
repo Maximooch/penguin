@@ -32,6 +32,17 @@ jobs:
           tests/system/test_session_save_sync.py
           tests/core_runtime/test_session_goal_store.py
           tests/core_runtime/test_opencode_persistence.py
+          tests/system/test_session_index_cross_process.py
+          tests/system/test_session_eviction_unsaved.py
+          tests/system/test_session_backup_restore.py
+          tests/system/test_session_revisions_pruned.py
+          tests/system/test_session_rollover_history.py
+          tests/api/test_runtime_event_ids_across_restart.py
+          tests/api/test_runtime_event_ledger_limits.py
+          tests/api/test_runtime_event_ledger_vacuum.py
+          tests/api/test_sse_ledger_flush_protocol.py
+          tests/api/test_vcs_watcher_bounds.py
+          tests/api/test_vcs_status_service.py
 
   windows-process-contract:
     runs-on: windows-latest
@@ -326,10 +337,3 @@ jobs:
           yarn test:security
           yarn build
           git diff --exit-code -- yarn.lock
-      - name: Verify the visualizer dependency graph and build
-        working-directory: examples/agent-visualizer-web
-        run: |
-          npm ci
-          npm audit
-          npm run build
-          git diff --exit-code -- package-lock.json

@@ -312,30 +312,25 @@ async def _async_test_tool_call_accumulation():
     Test tool_call accumulation and retrieval in gateway.
     Verifies Phase 2 tool_call SSE interrupt mechanism.
     """
+    from penguin.llm.tool_call_accumulator import ToolCallAccumulator
+
     gw = OpenRouterGateway.__new__(OpenRouterGateway)
-    gw._tool_call_acc = {"name": None, "arguments": ""}
-    gw._last_tool_call = None
+    gw._tool_calls = ToolCallAccumulator()
 
-    # Simulate accumulating tool call data
-    gw._tool_call_acc["name"] = "read_file"
-    gw._tool_call_acc["arguments"] = '{"path": "test.py"}'
-
-    # Snapshot to last_tool_call
-    gw._last_tool_call = {
-        "name": gw._tool_call_acc["name"],
-        "arguments": gw._tool_call_acc["arguments"],
-    }
+    # Streamed fragments are not runnable until the stream ends cleanly
+    gw._record_tool_call_delta(
+        [{"index": 0, "function": {"name": "read_file", "arguments": '{"path": '}}]
+    )
+    gw._record_tool_call_delta([{"index": 0, "function": {"arguments": '"test.py"}'}}])
+    assert gw.has_pending_tool_call() is False
+    gw._tool_calls.close_all()
 
     # Retrieve and clear
     tool_info = gw.get_and_clear_last_tool_call()
     assert tool_info is not None
     assert tool_info["name"] == "read_file"
     assert tool_info["arguments"] == '{"path": "test.py"}'
-
-    # Should be cleared
-    assert gw._last_tool_call is None
-    assert gw._tool_call_acc["name"] is None
-    assert gw._tool_call_acc["arguments"] == ""
+    assert gw.has_pending_tool_call() is False
 
     # Second retrieval should return None
     tool_info2 = gw.get_and_clear_last_tool_call()

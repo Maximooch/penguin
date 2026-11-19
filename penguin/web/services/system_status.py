@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 import subprocess
+import time
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,8 +21,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _LAST_BRANCH_KEYS: dict[str, str] = {}
-_VCS_EMIT_TASK: asyncio.Task | None = None
+# asyncio holds tasks weakly; keep each pending emit until it finishes.
+_VCS_EMIT_TASKS: set[asyncio.Task] = set()
 _VCS_WATCH_TASK: asyncio.Task | None = None
+# Directories with a live client (an SSE connection), counted per connection.
+# Only these are polled; an idle server runs no git at all.
+VCS_WATCHED_ATTR = "_vcs_watched_directories"
+# An unchanged directory is polled less often, up to this interval.
+VCS_POLL_MAX_INTERVAL_SECONDS = 10.0
 
 
 def _run_git(args: Iterable[str], cwd: str) -> str:
@@ -243,8 +252,7 @@ def _emit_vcs_update(
         _LAST_BRANCH_KEYS[scope] = branch_key
         try:
             loop = asyncio.get_running_loop()
-            global _VCS_EMIT_TASK
-            _VCS_EMIT_TASK = loop.create_task(
+            task = loop.create_task(
                 core.event_bus.emit(
                     "opencode_event",
                     wrap_opencode_event(
@@ -260,27 +268,78 @@ def _emit_vcs_update(
                     ),
                 )
             )
+            _VCS_EMIT_TASKS.add(task)
+            task.add_done_callback(_VCS_EMIT_TASKS.discard)
         except Exception:
             logger.debug("Unable to emit vcs.branch.updated", exc_info=True)
 
 
+def watch_vcs_directory(
+    core: Any, directory: str | None, session_id: str | None = None
+) -> str:
+    """Count one live client watching a directory; return the key to release."""
+    key = _resolve_directory(core, directory=directory, session_id=session_id)
+    watched = getattr(core, VCS_WATCHED_ATTR, None)
+    if not isinstance(watched, Counter):
+        watched = Counter()
+        setattr(core, VCS_WATCHED_ATTR, watched)
+    watched[key] += 1
+    return key
+
+
+def unwatch_vcs_directory(core: Any, key: str) -> None:
+    """Release one client's watch taken with ``watch_vcs_directory``."""
+    watched = getattr(core, VCS_WATCHED_ATTR, None)
+    if isinstance(watched, Counter) and watched.get(key, 0) > 0:
+        watched[key] -= 1
+        if watched[key] <= 0:
+            del watched[key]
+
+
 async def _vcs_watch_loop(core: Any, interval_seconds: float) -> None:
-    """Watch for VCS branch changes and emit events."""
+    """Watch for VCS branch changes in watched directories and emit events.
+
+    Polls only directories a connected client watches. A directory whose state
+    did not change is polled less often (doubling up to
+    ``VCS_POLL_MAX_INTERVAL_SECONDS``); a change resets it.
+    """
+    due: dict[str, float] = {}
+    delay: dict[str, float] = {}
+    last_state: dict[str, str] = {}
     while True:
         try:
-            scopes: dict[str, list[str | None]] = {_resolve_directory(core): [None]}
+            watched = getattr(core, VCS_WATCHED_ATTR, None) or {}
+            scopes: dict[str, list[str | None]] = {key: [None] for key in watched}
             session_dirs = getattr(core, "_opencode_session_directories", {})
             if isinstance(session_dirs, dict):
                 for session_id in list(session_dirs):
                     directory = _resolve_directory(core, session_id=session_id)
-                    scopes.setdefault(directory, []).append(session_id)
+                    if directory in scopes:
+                        scopes[directory].append(session_id)
+            for gone in set(due) - set(scopes):
+                due.pop(gone, None)
+                delay.pop(gone, None)
+                last_state.pop(gone, None)
 
+            now = time.monotonic()
             for directory, session_ids in scopes.items():
+                if now < due.get(directory, 0.0):
+                    continue
                 # ponytail: cancellation lets bounded Git calls finish in the thread.
                 # Use async subprocesses if immediate termination becomes necessary.
                 snapshot = await asyncio.to_thread(
                     get_vcs_info, core, directory=directory, emit_events=False
                 )
+                state = json.dumps(snapshot, sort_keys=True, default=str)
+                if state == last_state.get(directory):
+                    delay[directory] = min(
+                        delay.get(directory, interval_seconds) * 2,
+                        VCS_POLL_MAX_INTERVAL_SECONDS,
+                    )
+                else:
+                    delay[directory] = interval_seconds
+                last_state[directory] = state
+                due[directory] = time.monotonic() + delay[directory]
                 for session_id in session_ids:
                     _emit_vcs_update(core, snapshot, directory, session_id)
         except asyncio.CancelledError:

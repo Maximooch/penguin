@@ -362,6 +362,22 @@ class BrowserHarnessAdapter:
         name: Optional[str] = None,
         dry_run: bool = False,
     ) -> Dict[str, Any]:
+        """Stop a browser-harness daemon and drop its ownership record.
+
+        Holds the helpers lock like every other harness call: cleanup reloads
+        the harness modules for its target and rewrites ``BU_NAME``, which
+        would otherwise repoint a call in progress at another daemon.
+        """
+        with _HELPERS_LOCK:
+            return self._cleanup_unlocked(owned_only, force, name, dry_run)
+
+    def _cleanup_unlocked(
+        self,
+        owned_only: bool,
+        force: bool,
+        name: str | None,
+        dry_run: bool,
+    ) -> dict[str, Any]:
         target_name = _slug(name or self.name)
         record = self.ownership_store.get(target_name)
         owned_by_penguin = bool(record and record.get("started_by_penguin"))

@@ -109,7 +109,7 @@ def test_model_facade_sync_shims_delegate_to_runtime(monkeypatch) -> None:
     assert calls[2][2]["api_client_factory"] is facade_globals["APIClient"]
     assert calls[3][1] == (core, new_config)
     assert calls[3][2]["context_window_tokens"] == 100
-    assert calls[3][2]["refresh_active_client"] == core.refresh_api_client
+    assert calls[3][2]["api_client_factory"] is facade_globals["APIClient"]
     assert calls[4][1] == ("openai/gpt-4o", "openai", "native")
     assert calls[5][1] == ("openai/gpt-4o", {"gpt": {"provider": "openai"}})
     assert calls[5][2]["current_client_preference"] == "native"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -1036,3 +1037,37 @@ async def test_llm_step_injects_plan_mode_notice() -> None:
         and "PENGUIN_AGENT_MODE_PLAN" in str(msg.get("content", ""))
         for msg in messages
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("tool schema exploded"), asyncio.CancelledError()],
+    ids=["unexpected-error", "cancelled"],
+)
+async def test_llm_step_aborts_stream_on_any_failure(failure: BaseException) -> None:
+    cm = MagicMock()
+    cm.conversation.get_formatted_messages.return_value = [
+        {"role": "user", "content": "hi"}
+    ]
+    cm.get_current_session.return_value = SimpleNamespace(id="session_1")
+    cm.core = MagicMock()
+    engine = Engine(
+        EngineSettings(),
+        cm,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    engine._prepare_responses_tools = MagicMock(return_value={})  # type: ignore[method-assign]
+    engine._call_llm_with_retry = AsyncMock(side_effect=failure)  # type: ignore[method-assign]
+
+    with pytest.raises(type(failure)):
+        await engine._llm_step(
+            tools_enabled=True,
+            streaming=True,
+            stream_callback=AsyncMock(),
+            agent_id="default",
+        )
+
+    cm.core.abort_streaming_message.assert_called_once()

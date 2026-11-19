@@ -55,6 +55,9 @@ class FAISSMemoryProvider(MemoryProvider):
         self._embedding_model = None
         self._index = None
         self._metadata = {}
+        # FAISS vector id -> memory id. Each live memory owns exactly one
+        # vector in an id-mapped index; update and delete remove it.
+        self._memory_by_vector: Dict[int, str] = {}
         
         # Create storage directory
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -70,27 +73,35 @@ class FAISSMemoryProvider(MemoryProvider):
             from sentence_transformers import SentenceTransformer
             self._embedding_model = SentenceTransformer(self.embedding_model)
             
-            # Load or create FAISS index
-            if self.index_file.exists():
-                self._index = faiss.read_index(str(self.index_file))
-                logger.info(f"Loaded existing FAISS index with {self._index.ntotal} vectors")
-            else:
-                # Create new index based on type
-                if self.index_type == 'IndexFlatIP':
-                    self._index = faiss.IndexFlatIP(self.dimension)
-                elif self.index_type == 'IndexFlatL2':
-                    self._index = faiss.IndexFlatL2(self.dimension)
-                else:
-                    # Default to Inner Product
-                    self._index = faiss.IndexFlatIP(self.dimension)
-                
-                logger.info(f"Created new FAISS index: {self.index_type}")
-            
             # Load metadata
             if self.metadata_file.exists():
                 with open(self.metadata_file, 'r', encoding='utf-8') as f:
                     self._metadata = json.load(f)
-            
+
+            # Load or create the FAISS index
+            loaded = (
+                faiss.read_index(str(self.index_file))
+                if self.index_file.exists()
+                else None
+            )
+            if isinstance(loaded, faiss.IndexIDMap2) and all(
+                'vector_id' in meta for meta in self._metadata.values()
+            ):
+                self._index = loaded
+                logger.info(f"Loaded existing FAISS index with {self._index.ntotal} vectors")
+            else:
+                # New, or saved by the positional format that kept orphan
+                # vectors: rebuild from the stored memories.
+                self._index = faiss.IndexIDMap2(self._new_flat_index())
+                if self._metadata:
+                    self._reindex_all()
+                    await self._save_index_and_metadata()
+                logger.info(f"Created FAISS index: {self.index_type} with id map")
+            self._memory_by_vector = {
+                int(meta['vector_id']): memory_id
+                for memory_id, meta in self._metadata.items()
+            }
+
             logger.info(f"FAISS memory provider initialized at {self.storage_dir}")
             
         except ImportError as e:
@@ -117,16 +128,15 @@ class FAISSMemoryProvider(MemoryProvider):
             # Generate embedding
             embedding = self._embedding_model.encode([content])
             
-            # Add to FAISS index
-            self._index.add(embedding)
-            
+            vector_id = self._add_vector(memory_id, embedding)
+
             # Store metadata
             self._metadata[memory_id] = {
                 'content': content,
                 'metadata': metadata or {},
                 'categories': categories or [],
                 'created_at': datetime.now().isoformat(),
-                'index_position': self._index.ntotal - 1  # Position in FAISS index
+                'vector_id': vector_id,
             }
             
             # Save to disk
@@ -173,14 +183,13 @@ class FAISSMemoryProvider(MemoryProvider):
                 if index == -1:  # FAISS returns -1 for invalid indices
                     continue
                 
-                # Find metadata by index position
-                memory_data = None
-                for memory_id, meta in self._metadata.items():
-                    if meta.get('index_position') == index:
-                        memory_data = meta
-                        memory_data['id'] = memory_id
-                        break
-                
+                memory_id = self._memory_by_vector.get(int(index))
+                memory_data = (
+                    {**self._metadata[memory_id], 'id': memory_id}
+                    if memory_id in self._metadata
+                    else None
+                )
+
                 if memory_data:
                     result = {
                         'id': memory_data['id'],
@@ -225,18 +234,10 @@ class FAISSMemoryProvider(MemoryProvider):
             
             # If content changed, need to regenerate embedding and update index
             if content is not None and content != memory_data['content']:
-                # For simplicity in Stage 1, we'll recreate the entire index
-                # In Stage 2, we could implement more efficient updates
-                old_index_pos = memory_data['index_position']
-                
-                # Generate new embedding
                 new_embedding = self._embedding_model.encode([content])
-                
-                # For now, we'll mark the old entry as deleted and add a new one
-                # This is not optimal but works for Stage 1
-                self._index.add(new_embedding)
+                self._remove_vector(memory_data.get('vector_id'))
+                memory_data['vector_id'] = self._add_vector(memory_id, new_embedding)
                 memory_data['content'] = content
-                memory_data['index_position'] = self._index.ntotal - 1
             
             if metadata is not None:
                 memory_data['metadata'] = metadata
@@ -255,7 +256,7 @@ class FAISSMemoryProvider(MemoryProvider):
             return False
         
         try:
-            # Remove from metadata (FAISS index cleanup would be done in Stage 2)
+            self._remove_vector(self._metadata[memory_id].get('vector_id'))
             del self._metadata[memory_id]
             
             await self._save_index_and_metadata()
@@ -390,6 +391,39 @@ class FAISSMemoryProvider(MemoryProvider):
             health_status['checks']['general'] = f'Health check failed: {str(e)}'
             return health_status
     
+    def _new_flat_index(self) -> Any:
+        if self.index_type == 'IndexFlatL2':
+            return self._faiss.IndexFlatL2(self.dimension)
+        return self._faiss.IndexFlatIP(self.dimension)
+
+    def _add_vector(self, memory_id: str, embedding: Any) -> int:
+        """Add one memory's vector under a fresh id and return that id."""
+        import numpy as np
+
+        vector_id = max(self._memory_by_vector, default=-1) + 1
+        self._index.add_with_ids(
+            np.asarray(embedding, dtype='float32'),
+            np.array([vector_id], dtype='int64'),
+        )
+        self._memory_by_vector[vector_id] = memory_id
+        return vector_id
+
+    def _remove_vector(self, vector_id: Any) -> None:
+        import numpy as np
+
+        if vector_id is None:
+            return
+        self._index.remove_ids(np.array([int(vector_id)], dtype='int64'))
+        self._memory_by_vector.pop(int(vector_id), None)
+
+    def _reindex_all(self) -> None:
+        """Give every stored memory one vector, re-encoding its content."""
+        self._memory_by_vector = {}
+        for memory_id, meta in self._metadata.items():
+            meta.pop('index_position', None)
+            embedding = self._embedding_model.encode([meta.get('content', '')])
+            meta['vector_id'] = self._add_vector(memory_id, embedding)
+
     async def _save_index_and_metadata(self):
         """Save FAISS index and metadata to disk."""
         try:

@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import pytest
 
+from penguin.core_runtime.process_lifecycle import SessionRun
 from penguin.system.session_manager import SessionManager
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.services.session_summary import summarize_session_title
@@ -1948,7 +1949,7 @@ def test_list_session_statuses_marks_active_requests_busy():
     now = datetime.now().isoformat()
     session = _session("session_active", "Active Session", now)
     core = _core([session])
-    core._opencode_active_requests = {"session_active": 1}
+    core._opencode_session_runs = {"session_active": SessionRun(requests=1)}
 
     statuses = list_session_statuses(core)
     assert statuses["session_active"]["type"] == "busy"

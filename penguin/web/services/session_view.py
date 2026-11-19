@@ -21,6 +21,7 @@ from penguin.core_runtime.session_goals import (
     normalize_goal,
 )
 from penguin.core_runtime import session_lookup
+from penguin.core_runtime.process_lifecycle import busy_session_ids
 from penguin.system.state import MessageCategory
 from penguin.web.services.provider_catalog import canonical_model_id
 
@@ -1094,41 +1095,8 @@ def list_session_statuses(core: Any) -> dict[str, dict[str, Any]]:
     for info in list_session_infos(core):
         statuses[str(info["id"])] = {"type": "idle"}
 
-    stream_states = getattr(core, "_opencode_stream_states", None)
-    if isinstance(stream_states, dict):
-        for session_id, state in stream_states.items():
-            if not isinstance(state, dict):
-                continue
-            is_active = bool(state.get("active"))
-            statuses[str(session_id)] = {"type": "busy" if is_active else "idle"}
-
-    adapters = getattr(core, "_tui_adapters", None)
-    if isinstance(adapters, dict):
-        for session_id, adapter in adapters.items():
-            adapter_status = getattr(adapter, "_session_status", None)
-            if adapter_status in {"busy", "idle"}:
-                statuses[str(session_id)] = {"type": adapter_status}
-
-    active_requests = getattr(core, "_opencode_active_requests", None)
-    if isinstance(active_requests, dict):
-        for session_id, count in active_requests.items():
-            if isinstance(count, int) and count > 0:
-                statuses[str(session_id)] = {"type": "busy"}
-
-    for session_id in list(statuses.keys()):
-        messages = get_session_messages(core, session_id, limit=1)
-        if not messages:
-            continue
-        last = messages[-1]
-        info = last.get("info") if isinstance(last, dict) else None
-        if not isinstance(info, dict):
-            continue
-        role = info.get("role")
-        raw_time = info.get("time")
-        time_data: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
-        completed = time_data.get("completed")
-        if role == "assistant" and not completed:
-            statuses[session_id] = {"type": "busy"}
+    for session_id in busy_session_ids(core):
+        statuses[session_id] = {"type": "busy"}
 
     return statuses
 

@@ -52,6 +52,10 @@ class QuestionRequest:
         return payload
 
 
+# Resolved questions kept for lookups and late waiters; the oldest are dropped.
+MAX_RESOLVED_QUESTIONS = 1000
+
+
 class QuestionManager:
     """Singleton manager for pending question requests."""
 
@@ -177,7 +181,7 @@ class QuestionManager:
             request.status = QuestionStatus.ANSWERED
             request.answers = list(answers)
             request.resolved_at = datetime.utcnow()
-            self._resolved[request_id] = request
+            self._record_resolved(request)
 
         self._notify_waiters(request)
 
@@ -197,7 +201,7 @@ class QuestionManager:
                 return None
             request.status = QuestionStatus.REJECTED
             request.resolved_at = datetime.utcnow()
-            self._resolved[request_id] = request
+            self._record_resolved(request)
 
         self._notify_waiters(request)
 
@@ -208,6 +212,12 @@ class QuestionManager:
                 logger.debug("Question rejected callback failed", exc_info=True)
 
         return request
+
+    def _record_resolved(self, request: QuestionRequest) -> None:
+        """Keep a resolved request, dropping the oldest past the cap (lock held)."""
+        self._resolved[request.id] = request
+        while len(self._resolved) > MAX_RESOLVED_QUESTIONS:
+            self._resolved.pop(next(iter(self._resolved)))
 
     def list_pending(self, session_id: str | None = None) -> list[QuestionRequest]:
         """List pending question requests, optionally filtered by session."""

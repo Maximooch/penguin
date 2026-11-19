@@ -84,7 +84,7 @@ def test_process_runtime_start_poll_and_exit() -> None:
 def test_process_runtime_writes_stdin_and_stops() -> None:
     runtime = ProcessRuntime()
 
-    started = runtime.start("cat")
+    started = runtime.start("cat", stdin=True)
     process_id = started["process_id"]
     write_result = runtime.write_stdin(process_id, "ping\n")
     polled = _poll_until_output(runtime, process_id, "ping")
@@ -108,7 +108,7 @@ def test_process_runtime_captures_stderr() -> None:
 def test_process_runtime_retains_bounded_event_history() -> None:
     runtime = ProcessRuntime(max_events_per_process=2)
 
-    process_id = runtime.start("cat")["process_id"]
+    process_id = runtime.start("cat", stdin=True)["process_id"]
     for value in ("one", "two", "three"):
         runtime.write_stdin(process_id, f"{value}\n")
         _poll_until_output(runtime, process_id, value)
@@ -308,15 +308,17 @@ def test_process_runtime_terminate_timeout_escalates_to_kill() -> None:
 def test_process_runtime_cleanup_stops_and_removes_managed_processes() -> None:
     runtime = ProcessRuntime()
 
-    process_id = runtime.start("cat")["process_id"]
+    process_id = runtime.start("cat", stdin=True)["process_id"]
     cleanup = runtime.cleanup(timeout=0.5)
     polled = runtime.poll(process_id)
 
     assert cleanup["status"] == "completed"
     assert cleanup["stopped"] == [process_id]
     assert cleanup["removed"] == [process_id]
+    assert process_id not in runtime._processes
+    # The receipt survives cleanup, so the id still reports the old result.
     assert polled["status"] == "error"
-    assert polled["error"] == "unknown_process_id"
+    assert polled["error"] == "process_result_expired"
 
 
 def test_process_runtime_start_failure_returns_error(tmp_path: Path) -> None:
