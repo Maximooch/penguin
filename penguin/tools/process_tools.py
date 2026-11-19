@@ -224,6 +224,9 @@ class ProcessTools:
         context: dict[str, Any],
         owner: tuple[str, str],
     ) -> dict[str, Any]:
+        stdin = arguments.get("stdin", False)
+        if not isinstance(stdin, bool):
+            return self.runtime._error("", "stdin must be a boolean")
         timeout = arguments.get("timeout_seconds")
         if timeout is None and os.environ.get("PENGUIN_TOOL_TIMEOUT") is not None:
             timeout = float(os.environ["PENGUIN_TOOL_TIMEOUT"])
@@ -277,6 +280,7 @@ class ProcessTools:
                     env=arguments.get("env"),
                     process_id=process_id,
                     owner=owner,
+                    stdin=stdin,
                     timeout_seconds=timeout,
                     on_event=self._on_event,
                 )

@@ -223,12 +223,14 @@ def test_closed_stream_selector_blocks_and_cancellation_wakes_it():
 
 def test_stdin_is_utf8_and_backpressure_is_bounded(runtime, command):
     pid = runtime.start(
-        command("import sys; print(sys.stdin.buffer.readline().hex())")
+        command("import sys; print(sys.stdin.buffer.readline().hex())"), stdin=True
     )["process_id"]
     written = runtime.write_stdin(pid, "\u96ea\n")
     assert written["bytes_written"] == 4
     assert "e99baa0a" in finish(runtime, pid)["output"]
-    pid = runtime.start(command("import time; time.sleep(30)"))["process_id"]
+    pid = runtime.start(command("import time; time.sleep(30)"), stdin=True)[
+        "process_id"
+    ]
     started = time.monotonic()
     result = runtime.write_stdin(pid, "x" * 1000000, timeout_ms=100)
     assert time.monotonic() - started < 2

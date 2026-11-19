@@ -50,7 +50,7 @@ def test_capture_runs_without_polling_and_spills_to_log(
 
 
 def test_wait_deadline_does_not_kill_quiet_process(runtime: ProcessRuntime) -> None:
-    process_id = runtime.start("read done")["process_id"]
+    process_id = runtime.start("read done", stdin=True)["process_id"]
     start = time.monotonic()
     result = runtime.poll(process_id, wait_ms=50)
     assert time.monotonic() - start >= 0.04
@@ -63,7 +63,7 @@ def test_wait_deadline_does_not_kill_quiet_process(runtime: ProcessRuntime) -> N
 def test_consumers_and_request_retries_do_not_lose_output(
     runtime: ProcessRuntime,
 ) -> None:
-    process_id = runtime.start("printf 'one\\n'; read done")["process_id"]
+    process_id = runtime.start("printf 'one\\n'; read done", stdin=True)["process_id"]
     first = runtime.poll(
         process_id, since_sequence=None, request_id="call-1", wait_ms=1000
     )
@@ -78,7 +78,7 @@ def test_consumers_and_request_retries_do_not_lose_output(
 
 
 def test_zero_size_read_does_not_advance_cursor(runtime: ProcessRuntime) -> None:
-    process_id = runtime.start("printf 'one\\n'; read done")["process_id"]
+    process_id = runtime.start("printf 'one\\n'; read done", stdin=True)["process_id"]
     peek = runtime.poll(process_id, since_sequence=None, max_chars=0, wait_ms=1000)
     assert peek["next_sequence"] == 0
     assert "one" in runtime.poll(process_id, since_sequence=None)["output"]
@@ -163,7 +163,7 @@ def test_log_limit_is_visible_without_stopping_capture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("penguin.tools.process_runtime.MAX_LOG_CHARS", 4)
-    pid = runtime.start("printf 'abcdefgh'; read done")["process_id"]
+    pid = runtime.start("printf 'abcdefgh'; read done", stdin=True)["process_id"]
     result = runtime.poll(pid, wait_ms=1000)
     assert result["log_truncated"] is True
     assert "abcdefgh" in result["output"]
@@ -179,7 +179,7 @@ def test_capture_failure_terminates_child_and_surfaces_error(
         raise OSError("injected log failure")
 
     monkeypatch.setattr("penguin.tools.process_runtime.open", fail_open, raising=False)
-    pid = runtime.start("read done")["process_id"]
+    pid = runtime.start("read done", stdin=True)["process_id"]
     result = runtime.poll(pid, wait_ms=1000, wait_for_exit=True)
     assert result["status"] == "error"
     assert result["process_status"] == "exited"
@@ -222,7 +222,7 @@ def test_waiting_poll_does_not_block_other_readers(
 def test_stdin_backpressure_has_deadline_and_reports_partial_write(
     runtime: ProcessRuntime,
 ) -> None:
-    pid = runtime.start("sleep 2")["process_id"]
+    pid = runtime.start("sleep 2", stdin=True)["process_id"]
     started = time.monotonic()
     result = runtime.write_stdin(pid, "x" * 262144)
     assert time.monotonic() - started < 1.5
@@ -276,7 +276,7 @@ def test_concurrent_consumer_reads_commit_cursor_and_retry_atomically(
 
 
 def test_queued_stdin_writer_obeys_deadline(runtime: ProcessRuntime) -> None:
-    pid = runtime.start("sleep 3")["process_id"]
+    pid = runtime.start("sleep 3", stdin=True)["process_id"]
     with runtime._processes[pid].write_lock:
         started = time.monotonic()
         result = runtime.write_stdin(pid, "hello", timeout_ms=50)
@@ -291,7 +291,7 @@ def test_stdin_cancellation_reports_partial_utf8_bytes(
 ) -> None:
     import os
 
-    pid = runtime.start("sleep 3")["process_id"]
+    pid = runtime.start("sleep 3", stdin=True)["process_id"]
     cancelled = threading.Event()
     original_write = os.write
 

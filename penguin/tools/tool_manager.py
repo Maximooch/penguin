@@ -884,6 +884,14 @@ class ToolManager:
                 "input_schema": {
                     "type": "object",
                     "properties": {
+                        "stdin": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Keep stdin open for process_write_stdin. "
+                                "By default the command receives EOF."
+                            ),
+                        },
                         "timeout_seconds": {
                             "type": "number",
                             "minimum": 0,
@@ -919,6 +927,14 @@ class ToolManager:
                 "input_schema": {
                     "type": "object",
                     "properties": {
+                        "stdin": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Keep stdin open for process_write_stdin. "
+                                "By default the command receives EOF."
+                            ),
+                        },
                         "timeout_seconds": {
                             "type": "number",
                             "minimum": 0,
@@ -1001,7 +1017,10 @@ class ToolManager:
             },
             {
                 "name": "process_write_stdin",
-                "description": "Write UTF-8 stdin with a deadline; reports accepted bytes on partial writes.",
+                "description": (
+                    "Write UTF-8 input with a deadline to a process launched "
+                    "with stdin=true. Reports accepted bytes on partial writes."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {

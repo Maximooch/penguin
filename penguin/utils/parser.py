@@ -2060,7 +2060,12 @@ class ActionExecutor:
         name, command = (part.strip() for part in params.split(":", 1))
         runtime, owner, directory = self._process_scope()
         result = await asyncio.to_thread(
-            runtime.start, command, cwd=directory, process_id=name, owner=owner
+            runtime.start,
+            command,
+            cwd=directory,
+            process_id=name,
+            owner=owner,
+            stdin=True,
         )
         if result.get("status") == "error":
             return f"Error starting process '{name}': {result.get('error')}"

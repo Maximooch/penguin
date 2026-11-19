@@ -28,6 +28,11 @@ replaying commands or mutations. Output-length continuation comes from PR #106.
 Silent commands are compared using their arguments and exit/output metadata,
 so different successful commands do not collide just because both print nothing.
 
+By default, `execute_command` and `process_start` connect stdin to the null
+device. Set `"stdin": true` on either launch tool to keep a writable pipe for
+`process_write_stdin`. Legacy ActionXML `process_start` keeps stdin open for
+`process_send`.
+
 `process_write_stdin` sends UTF-8 input with a `timeout_ms` deadline (default 1000,
 range 1–60000), including time queued behind another writer. Writes return
 `bytes_written`, `bytes_total`, and `bytes_remaining`. These count bytes accepted
@@ -111,8 +116,9 @@ share the logs' disk retention policy; handles and retry state do not survive
 server restart. Pending completion notices expire with their handles.
 
 If every slot is running or draining, `process_limit_reached` reports state
-counts and the limit. Wait for completion or stop an owned command that is no
-longer needed. A global cleanup is not required to retire completed records.
+counts, the limit, and the caller's active process IDs, states, and ages in
+`owned_processes`. Wait for completion or stop an owned command that is no
+longer needed before retrying the launch.
 
 ## Completion notices
 

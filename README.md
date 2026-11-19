@@ -422,6 +422,7 @@ Built upon insights from:
 - [RawDog](https://github.com/AbanteAI/rawdog)
 
 For long-running shell commands, see [managed processes](docs/docs/tools/processes.md).
+Set `"stdin": true` when launching a command that needs input from `process_write_stdin`.
 Completed handles are retired under capacity pressure while logs and cached retry
 results remain available; live commands keep their slots.
 

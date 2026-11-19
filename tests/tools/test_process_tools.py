@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -30,7 +32,10 @@ def manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ToolMan
     result.process_tools.cleanup()
 
 
-def test_command_returns_output_or_resumable_handle(manager: ToolManager) -> None:
+@pytest.mark.parametrize("tool", ["execute_command", "process_start"])
+def test_command_returns_output_or_resumable_handle(
+    manager: ToolManager, tool: str
+) -> None:
     context = {"session_id": "one", "agent_id": "agent"}
     quick = manager.execute_tool(
         "execute_command", {"command": "printf 'hello\\n'"}, context
@@ -39,15 +44,16 @@ def test_command_returns_output_or_resumable_handle(manager: ToolManager) -> Non
     assert quick["returncode"] == 0
     assert "hello" in quick["output"]
     slow = manager.execute_tool(
-        "execute_command",
-        {"command": "read go; printf 'done\\n'", "yield_time_ms": 0},
+        tool,
+        {"command": "read go; printf 'done\\n'", "stdin": True, "yield_time_ms": 0},
         context,
     )
     assert slow["process_status"] == "running"
     pid = slow["process_id"]
-    manager.execute_tool(
+    written = manager.execute_tool(
         "process_write_stdin", {"process_id": pid, "text": "go\n"}, context
     )
+    assert written["bytes_written"] == 3
     final = manager.process_runtime.poll(pid, wait_ms=2000, wait_for_exit=True)
     assert final["process_status"] == "exited"
     assert "done" in final["output"]
@@ -58,6 +64,7 @@ def test_explicit_timeout_preserves_partial_output(manager: ToolManager) -> None
         "execute_command",
         {
             "command": "printf 'before-timeout\\n'; read go",
+            "stdin": True,
             "timeout_seconds": 0.15,
             "yield_time_ms": 2000,
         },
@@ -73,6 +80,7 @@ def test_timeout_continues_after_yield(manager: ToolManager) -> None:
         "execute_command",
         {
             "command": "read go",
+            "stdin": True,
             "timeout_seconds": 0.1,
             "yield_time_ms": 0,
         },
@@ -91,7 +99,7 @@ def test_other_sessions_cannot_access_process(
     manager: ToolManager, operation: str
 ) -> None:
     started = manager.execute_tool(
-        "process_start", {"command": "read go"}, {"session_id": "one"}
+        "process_start", {"command": "read go", "stdin": True}, {"session_id": "one"}
     )
     result = manager.execute_tool(
         operation,
@@ -129,7 +137,9 @@ async def test_completion_is_delivered_once_to_owning_conversation(
     context = ExecutionContext(session_id="one", agent_id="agent")
     prepare_process_step(manager, cm, context)
     result = manager.execute_tool(
-        "execute_command", {"command": "read go", "yield_time_ms": 0}, context.as_dict()
+        "execute_command",
+        {"command": "read go", "stdin": True, "yield_time_ms": 0},
+        context.as_dict(),
     )
     pid = result["process_id"]
     manager.execute_tool(
@@ -165,6 +175,7 @@ async def test_cancellation_stops_command_without_blocking_loop(
             "execute_command",
             {
                 "command": "read go",
+                "stdin": True,
                 "yield_time_ms": 60000,
             },
         )
@@ -239,7 +250,7 @@ async def test_native_scheduler_quiet_waits_then_delivers_final_output(
         started = await call(
             "execute_command",
             "start",
-            {"command": "read go; printf 'done\\n'", "yield_time_ms": 0},
+            {"command": "read go; printf 'done\\n'", "stdin": True, "yield_time_ms": 0},
         )
         pid = started[0]["process_id"]
         state = LoopState()
@@ -261,7 +272,12 @@ async def test_native_scheduler_quiet_waits_then_delivers_final_output(
 
 
 def test_invalid_command_parameters_do_not_launch_process(manager: ToolManager) -> None:
-    for args in ({"timeout_seconds": -1}, {"yield_time_ms": -1}, {"max_chars": -1}):
+    for args in (
+        {"timeout_seconds": -1},
+        {"yield_time_ms": -1},
+        {"max_chars": -1},
+        {"stdin": "false"},
+    ):
         result = manager.execute_tool("execute_command", {"command": "read go", **args})
         assert result["status"] == "error"
     assert not manager.process_runtime._processes
@@ -271,7 +287,9 @@ def test_invalid_command_parameters_do_not_launch_process(manager: ToolManager) 
 async def test_cancelled_poll_leaves_background_process_running(
     manager: ToolManager,
 ) -> None:
-    started = manager.execute_tool("process_start", {"command": "read go"})
+    started = manager.execute_tool(
+        "process_start", {"command": "read go", "stdin": True}
+    )
     task = asyncio.create_task(
         manager.execute_tool_async(
             "process_poll",
@@ -375,6 +393,7 @@ def test_terminal_outcome_is_identical_after_yield_or_immediate_completion(
         "execute_command",
         {
             "command": f"read go; exit {exit_code}",
+            "stdin": True,
             "yield_time_ms": 0,
         },
     )
@@ -405,9 +424,9 @@ async def test_cancel_backpressured_stdin_leaves_child_available(
     import threading
 
     context = {"session_id": "stdin", "agent_id": "agent"}
-    pid = manager.execute_tool("process_start", {"command": "sleep 3"}, context)[
-        "process_id"
-    ]
+    pid = manager.execute_tool(
+        "process_start", {"command": "sleep 3", "stdin": True}, context
+    )["process_id"]
     wrote = threading.Event()
     original_write = os.write
 
@@ -433,9 +452,9 @@ async def test_cancel_backpressured_stdin_leaves_child_available(
 
 def test_stdin_tool_forwards_deadline(manager: ToolManager) -> None:
     context = {"session_id": "stdin", "agent_id": "agent"}
-    pid = manager.execute_tool("process_start", {"command": "sleep 3"}, context)[
-        "process_id"
-    ]
+    pid = manager.execute_tool(
+        "process_start", {"command": "sleep 3", "stdin": True}, context
+    )["process_id"]
     with manager.process_runtime._processes[pid].write_lock:
         result = manager.execute_tool(
             "process_write_stdin",
@@ -529,10 +548,22 @@ def test_active_capacity_reports_counts_and_does_not_stop_commands(
     service = ProcessTools(runtime)
     context = {"session_id": "owner"}
     try:
-        first = service.execute("process_start", {"command": "read go"}, context)
+        first = service.execute(
+            "process_start", {"command": "read go", "stdin": True}, context
+        )
         denied = service.execute("execute_command", {"command": "printf blocked"}, {})
         assert denied["error"] == "process_limit_reached"
         assert denied["process_counts"] == {"running": 1, "draining": 0, "exited": 0}
+        assert denied["owned_processes"] == []
+        assert first["process_id"] not in denied["result"]
+        owned = service.execute(
+            "execute_command", {"command": "printf blocked"}, context
+        )
+        (active,) = owned["owned_processes"]
+        assert active["process_id"] == first["process_id"]
+        assert active["process_status"] == "running"
+        assert active["age_seconds"] >= 0
+        assert first["process_id"] in owned["result"]
         assert runtime._processes[first["process_id"]].process.poll() is None
         service.execute("process_stop", {"process_id": first["process_id"]}, context)
         assert (
@@ -543,6 +574,35 @@ def test_active_capacity_reports_counts_and_does_not_stop_commands(
         )
     finally:
         service.cleanup()
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or shutil.which("rg") is None, reason="requires Bash and ripgrep"
+)
+@pytest.mark.parametrize("tool", ["execute_command", "process_start"])
+def test_noninteractive_search_releases_single_process_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str
+) -> None:
+    monkeypatch.delenv("PENGUIN_TOOL_TIMEOUT", raising=False)
+    monkeypatch.delenv("RIPGREP_CONFIG_PATH", raising=False)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    (workdir / "example.txt").write_text("needle\n", encoding="utf-8")
+    runtime = ProcessRuntime(log_dir=tmp_path, max_processes=1)
+    service = ProcessTools(runtime)
+    try:
+        result = service.execute(
+            tool, {"command": "rg needle | head -1", "cwd": str(workdir)}, {}
+        )
+        final = runtime.poll(result["process_id"], wait_ms=1000, wait_for_exit=True)
+        assert final["process_status"] == "exited", final
+        assert final["returncode"] == 0
+        assert "example.txt:needle" in final["output"]
+        next_result = service.execute("execute_command", {"command": "printf next"}, {})
+        assert next_result["status"] == "completed", next_result
+        assert next_result["output"] == "[stdout] next"
+    finally:
+        service.close()
 
 
 def test_command_retry_after_retirement_does_not_execute_twice(tmp_path: Path) -> None:

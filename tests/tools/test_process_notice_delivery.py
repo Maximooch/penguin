@@ -142,7 +142,7 @@ async def test_a_listener_outlives_its_step_only_until_the_process_ends(
         started.update(
             manager.execute_tool(
                 "process_start",
-                {"command": "read go"},
+                {"command": "read go", "stdin": True},
                 {"session_id": OWNER[0], "agent_id": OWNER[1]},
             )
         )

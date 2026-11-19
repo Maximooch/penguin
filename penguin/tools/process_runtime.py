@@ -142,11 +142,12 @@ class ProcessRuntime:
         env: dict[str, str] | None = None,
         process_id: str | None = None,
         owner: tuple[str, str] = ("", "agent"),
+        stdin: bool = False,
         timeout_seconds: float | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
         notify_on_complete: bool = False,
     ) -> dict[str, Any]:
-        """Start a shell command and its output reader; return a zero cursor."""
+        """Start a shell command with optional writable stdin; return a zero cursor."""
         if timeout_seconds is not None and (
             not math.isfinite(timeout_seconds) or timeout_seconds < 0
         ):
@@ -186,16 +187,33 @@ class ProcessRuntime:
                     break
                 if len(self._processes) >= self._max_processes:
                     counts = {state: 0 for state in ("running", "draining", "exited")}
+                    owned = []
+                    now = time.time()
                     for record in self._processes.values():
-                        counts[record.status()] += 1
+                        status = record.status()
+                        counts[status] += 1
+                        if record.owner == owner and status != "exited":
+                            owned.append(
+                                {
+                                    "process_id": record.process_id,
+                                    "process_status": status,
+                                    "age_seconds": max(0, int(now - record.started_at)),
+                                }
+                            )
                     result = self._error(resolved_id, "process_limit_reached")
-                    result.update(limit=self._max_processes, process_counts=counts)
+                    result.update(
+                        limit=self._max_processes,
+                        process_counts=counts,
+                        owned_processes=owned,
+                    )
                     result["result"] += (
                         f"; limit={self._max_processes}, counts={counts}. "
                         "Wait for active commands to finish or use process_stop on "
-                        "an owned command you no longer need. Retrying a new command "
-                        "without releasing capacity will not help."
+                        "an owned command you no longer need. "
+                        "Retry only after capacity changes."
                     )
+                    if owned:
+                        result["result"] += f" Owned active processes: {owned}"
                     logger.warning("Process capacity exhausted: %s", counts)
                     return result
             log_path = None
@@ -213,7 +231,7 @@ class ProcessRuntime:
                     ),
                     cwd=resolved_cwd,
                     env=effective_env,
-                    stdin=subprocess.PIPE,
+                    stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
