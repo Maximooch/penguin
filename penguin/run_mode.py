@@ -57,6 +57,13 @@ class RunMode:
 
     # Consecutive empty LLM responses tolerated before continuous mode ends.
     MAX_CONSECUTIVE_EMPTY_RESPONSES = 5
+    # Consecutive failed tasks tolerated before continuous mode ends.
+    MAX_CONSECUTIVE_TASK_ERRORS = 5
+    # Engine statuses that the next task cannot improve on: the user stopped
+    # the run, the budget is spent, or the provider refused for good.
+    TERMINAL_TASK_STATUSES = frozenset({"stopped", "budget_limited", "provider_error"})
+    # Engine statuses that may be transient; retried, up to the limit above.
+    RETRYABLE_TASK_ERROR_STATUSES = frozenset({"error", "provider_recoverable_error"})
 
     def __init__(
         self,
@@ -728,6 +735,7 @@ class RunMode:
 
             # Main continuous mode loop
             consecutive_empty_responses = 0
+            consecutive_task_errors = 0
             while not self._shutdown_requested:
                 logger.debug(
                     f"RunMode: Continuous mode loop - shutdown_requested: {self._shutdown_requested}"
@@ -918,15 +926,45 @@ class RunMode:
                     self._shutdown_requested = True
                     break
 
-                # Check for other errors
-                if (
-                    task_result.get("status") == "error"
-                    and task_result.get("completion_type") == "error"
-                ):
+                task_status = task_result.get("status")
+
+                # The next task cannot do better: end instead of spinning.
+                if task_status in self.TERMINAL_TASK_STATUSES:
+                    logger.warning(
+                        "RunMode: task ended with status %s; ending continuous mode.",
+                        task_status,
+                    )
+                    await self._emit_event(
+                        {
+                            "type": "status",
+                            "status_type": "continuous_mode_ending",
+                            "data": {"reason": task_status},
+                        }
+                    )
+                    self._shutdown_requested = True
+                    break
+
+                # Errors that may be transient: pause, and give up when they
+                # keep coming. The engine reports them with any completion type.
+                if task_status in self.RETRYABLE_TASK_ERROR_STATUSES:
+                    consecutive_task_errors += 1
                     logger.error(
                         f"Error during task execution: {task_result.get('message')}"
                     )
-                    # For generic errors, emit event but continue (may be transient)
+                    if consecutive_task_errors >= self.MAX_CONSECUTIVE_TASK_ERRORS:
+                        await self._emit_event(
+                            {
+                                "type": "message",
+                                "role": "system",
+                                "content": (
+                                    f"{consecutive_task_errors} tasks failed in a "
+                                    "row. Ending continuous mode."
+                                ),
+                                "category": MessageCategory.ERROR,
+                            }
+                        )
+                        self._shutdown_requested = True
+                        break
                     await self._emit_event(
                         {
                             "type": "message",
@@ -937,6 +975,8 @@ class RunMode:
                     )
                     # Small delay before continuing to avoid rapid error loops
                     await asyncio.sleep(2)
+                else:
+                    consecutive_task_errors = 0
 
                 if (
                     project_task

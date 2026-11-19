@@ -613,7 +613,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     empty-response retry has no counter. `start()` checks a status the task
     engine never returns.
   - Blocked by: SM-15
-  - State: repeated empty responses now end continuous mode after 5 in a row; the model's emergency stop ends it; the retry branch no longer crashes on a missing `MessageCategory.WARNING`. Still open: engine statuses `error`, `provider_error`, `stopped` and `budget_limited` fall through the error branch (it needs `completion_type == "error"`, which the classifier never returns); `start()` checks a status the task engine never returns; `waiting_input` is not handled in the continuous loop.
+  - State: repeated empty responses now end continuous mode after 5 in a row; the model's emergency stop ends it; the retry branch no longer crashes on a missing `MessageCategory.WARNING`. (2026-11-19) Also fixed: engine statuses `stopped`, `budget_limited` and `provider_error` now end continuous mode, and `error` / `provider_recoverable_error` pause, then end it after 5 failed tasks in a row whatever the completion type; before, they fell through every branch and the loop started the next task at once, without yielding (a hot loop of provider calls on, say, a 402). Still open: `start()` checks a status the task engine never returns; `waiting_input` is not handled in the continuous loop.
 - [x] **SM-31 `utils` event bus subscription liveness** (c) [confirmed]
   - `penguin/utils/events.py:79,117,128`
   - Handlers are stored as `weakref.ref`, which is dead immediately for bound
@@ -1123,3 +1123,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-112: fixed (2026-11-19). `pytest -q tests/test_denied_control_actions.py`: 6 passed (denied and allowed, ActionXML `finish_task` / `finish_response` and native `finish_task`); the three denied cases red before the fix. Two new cases in `tests/core_runtime/test_action_execution.py`. Tool, engine, permission and action test files: 443 passed.
 - SM-23: fixed (2026-11-19). `pytest -q tests/system/test_session_rollover_history.py`: 6 passed; the long-tool-run case over four alignments, two red before the fix.
 - SM-10: fixed (2026-11-19). `pytest -q tests/core_runtime/test_process_retry_after_turn_start.py`: 2 passed; the after-turn-start case red before the fix (turn ran three times). `tests/core_runtime`: 449 passed.
+- SM-30 (rest): fixed (2026-11-19). `pytest -q tests/test_runmode_continuous_termination.py`: 8 passed; the six new cases hung before the fix (the loop never yielded, so the test timeout could not fire). RunMode test files: 67 passed.

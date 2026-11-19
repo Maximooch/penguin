@@ -48,10 +48,7 @@ async def test_repeated_empty_responses_end_continuous_mode() -> None:
 
     await asyncio.wait_for(run_mode.start_continuous(project_id=None), timeout=5)
 
-    assert (
-        run_mode._execute_task.await_count
-        == RunMode.MAX_CONSECUTIVE_EMPTY_RESPONSES
-    )
+    assert run_mode._execute_task.await_count == RunMode.MAX_CONSECUTIVE_EMPTY_RESPONSES
 
 
 @pytest.mark.asyncio
@@ -66,3 +63,35 @@ async def test_emergency_stop_ends_continuous_mode() -> None:
     await asyncio.wait_for(run_mode.start_continuous(project_id=None), timeout=5)
 
     assert run_mode._execute_task.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["provider_error", "stopped", "budget_limited"])
+async def test_a_status_that_cannot_improve_ends_continuous_mode(status: str) -> None:
+    """SM-30: these fell through every branch, so the loop ran the next task at once."""
+    run_mode = _run_mode([{"status": status, "completion_type": "task"}])
+
+    await asyncio.wait_for(run_mode.start_continuous(project_id=None), timeout=5)
+
+    assert run_mode._execute_task.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["error", "provider_recoverable_error"])
+async def test_repeated_task_errors_end_continuous_mode(status: str) -> None:
+    run_mode = _run_mode([{"status": status, "completion_type": "task"}])
+
+    await asyncio.wait_for(run_mode.start_continuous(project_id=None), timeout=5)
+
+    assert run_mode._execute_task.await_count == RunMode.MAX_CONSECUTIVE_TASK_ERRORS
+
+
+@pytest.mark.asyncio
+async def test_a_good_task_resets_the_error_count() -> None:
+    error = {"status": "error", "completion_type": "task"}
+    good = {"status": "completed", "completion_type": "task"}
+    run_mode = _run_mode([error, error, good, error, error, error, error, error])
+
+    await asyncio.wait_for(run_mode.start_continuous(project_id=None), timeout=5)
+
+    assert run_mode._execute_task.await_count == 3 + RunMode.MAX_CONSECUTIVE_TASK_ERRORS
