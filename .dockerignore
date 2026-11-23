@@ -22,3 +22,10 @@ tmp*/
 *.sqlite*
 *.coverage*
 
+
+# Local credentials and persisted runtime data are not build inputs.
+**/.env
+**/.env.*
+!**/.env.example
+workspace/
+**/.log_cache/

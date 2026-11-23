@@ -30,12 +30,12 @@ from penguin.dashboard.queries.runtime_events import get_workspace
 
 # ── cache database ─────────────────────────────────────────────────────
 
-CACHE_DIR = Path(__file__).resolve().parent.parent / ".log_cache"
+CACHE_DIR = Path.home() / ".cache" / "penguin" / "dashboard"
 CACHE_DB = str(CACHE_DIR / "server_log_cache.db")
 
 
 def _ensure_cache_db():
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     conn = sqlite3.connect(CACHE_DB, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute(

@@ -1,0 +1,12 @@
+http:
+  routers:
+    penguin:
+      rule: Host(`penguin.localhost`)
+      entryPoints:
+        - web
+      service: penguin
+  services:
+    penguin:
+      loadBalancer:
+        servers:
+          - url: http://penguin:8000

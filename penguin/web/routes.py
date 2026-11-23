@@ -132,6 +132,7 @@ from penguin.web.middleware.auth import (
     create_session_token,
     require_websocket_auth,
 )
+from penguin.web.middleware.upload_limit import max_upload_bytes as _max_upload_bytes
 from penguin.web.services.system_status import (
     get_formatter_status,
     get_lsp_status,
@@ -200,7 +201,6 @@ def _serialize_task_payload(
 
 
 MAX_IMAGES_PER_REQUEST = 10
-DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
 ALLOWED_UPLOAD_CONTENT_TYPES = {
     "image/gif",
     "image/jpeg",
@@ -214,11 +214,6 @@ VALIDATED_UPLOAD_IMAGE_FORMATS = {
     "PNG": ("image/png", {".png"}),
     "WEBP": ("image/webp", {".webp"}),
 }
-
-
-def _max_upload_bytes() -> int:
-    """Return the configured upload size limit in bytes."""
-    return int(os.getenv("PENGUIN_MAX_UPLOAD_BYTES", str(DEFAULT_MAX_UPLOAD_BYTES)))
 
 
 def _validate_saved_upload_image(

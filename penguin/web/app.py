@@ -176,6 +176,7 @@ def create_app() -> "FastAPI":
         from .routes import router, get_capabilities
         from .integrations.github_webhook import router as github_webhook_router
         from .middleware.auth import AuthenticationMiddleware, AuthConfig
+        from .middleware.upload_limit import UploadBodyLimitMiddleware
         from .sse_events import router as sse_router, set_core_instance
     except ImportError:
         raise ImportError(
@@ -272,6 +273,8 @@ def create_app() -> "FastAPI":
                         status_code,
                         duration_ms,
                     )
+
+    app.add_middleware(UploadBodyLimitMiddleware)
 
     # Configure CORS
     origins_env = os.getenv("PENGUIN_CORS_ORIGINS", "").strip()

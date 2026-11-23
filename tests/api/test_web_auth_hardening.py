@@ -515,7 +515,7 @@ def test_dashboard_ui_includes_fragment_bootstrap_and_local_auth_gate() -> None:
         / "static"
         / "dashboard.html"
     )
-    content = dashboard_path.read_text()
+    content = dashboard_path.read_text(encoding="utf-8")
 
     assert "local_token" in content
     assert "/api/v1/auth/session" in content
