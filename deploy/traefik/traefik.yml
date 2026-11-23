@@ -1,13 +1,7 @@
-api:
-  dashboard: true
-  insecure: true
-
 entryPoints:
   web:
     address: ":80"
-  websecure:
-    address: ":443"
 
 providers:
-  docker:
-    exposedByDefault
+  file:
+    filename: /etc/traefik/dynamic.yml

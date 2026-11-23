@@ -505,12 +505,16 @@ def _extract_archive(archive_path: Path, destination: Path) -> None:
         with tarfile.open(archive_path, "r:gz") as archive:
             base = destination.resolve()
             for member in archive.getmembers():
+                if not (member.isfile() or member.isdir()):
+                    raise RuntimeError(
+                        f"Unsupported member type in sidecar tar archive: {member.name}"
+                    )
                 target = (destination / member.name).resolve()
                 if base not in target.parents and target != base:
                     raise RuntimeError(
                         f"Unsafe path in sidecar tar archive: {member.name}"
                     )
-            archive.extractall(destination)
+            archive.extractall(destination, filter="data")
         return
 
     raise RuntimeError(f"Unsupported sidecar archive format: {archive_path.name}")
