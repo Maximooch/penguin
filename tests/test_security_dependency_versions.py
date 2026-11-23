@@ -15,7 +15,7 @@ SECURITY_FLOORS = {
     "opentelemetry-api": "1.45.2",
     "pyasn1": "0.6.5",
     "setuptools": "84.1.0",
-    "tornado": "6.6",
+    "tornado": "6.6.1",
 }
 
 
