@@ -56,6 +56,17 @@ def _build_archive_bytes(asset_name: str, binary_name: str) -> bytes:
     return buf.getvalue()
 
 
+def test_extracts_regular_sidecar_tar(tmp_path: Path) -> None:
+    archive_path = tmp_path / "sidecar.tar.gz"
+    binary_name = opencode_launcher._sidecar_binary_name()
+    archive_path.write_bytes(_build_archive_bytes(archive_path.name, binary_name))
+    destination = tmp_path / "extracted"
+
+    opencode_launcher._extract_archive(archive_path, destination)
+
+    assert (destination / binary_name).read_bytes() == b"#!/bin/sh\necho sidecar\n"
+
+
 def test_default_release_url_points_to_penguin_repo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
